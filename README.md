@@ -61,7 +61,7 @@ MP.save_results(output_path='file_path')
 - `Cactus`: https://cactus.nci.nih.gov/
 ### Note: Add API keys during initialization:
 ```bash
-mp = MolecularProcessor(
+MP.config_web_request(
     chemspider_api_key='your_key',
     comptox_api_key='your_key'
 )
