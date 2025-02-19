@@ -15,7 +15,7 @@ a.process(neutralize=False, remove_stereo=False)
 # sanitize: 是否执行化学校验，默认为True
 a.config_deduplicator(data_type='discrete')  # 离散：discrete，连续：continuous，可选参数method为auto, vote, 3sigma, IQR
 a.deduplicate_data()
-# a.config_web_request(source='chemspider', chemspider_api_key='58tuI2qUNt712VmqGAClR7v90JUFKdNG1MbyowCX')
+# a.config_web_request(source='chemspider', chemspider_api_key='key')
 # a.config_web_request(source='cactus', max_workers=2)
 a.config_web_request(source='pubchem', max_workers=4)
 # a.config_web_request(source='comptox', comptox_api_key='key', max_workers=4)
