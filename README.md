@@ -30,7 +30,7 @@ A toolkit for batch querying chemical properties from multiple web sources.
 pip install molppc
 ```
 ## Quick Start
-```bash
+```{python}
 from molppc import MolecularProcessor
 
 # Initialize processor
@@ -60,7 +60,7 @@ MP.save_results(output_path='file_path')
 - `CompTox`: https://comptox.epa.gov/dashboard/
 - `Cactus`: https://cactus.nci.nih.gov/
 ### Note: Add API keys during initialization:
-```bash
+```{python}
 MP.config_web_request(
     chemspider_api_key='your_key',
     comptox_api_key='your_key'
