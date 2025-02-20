@@ -104,13 +104,30 @@ class DataHandler:
         if directory:
             os.makedirs(directory, exist_ok=True)
 
-        if output_path.endswith('.csv'):
-            df[columns].to_csv(output_path, index=False, encoding='utf-8')
-        elif output_path.endswith(('.xls', '.xlsx')):
-            df[columns].to_excel(output_path, index=False)
-        elif output_path.endswith('.txt'):
-            df[columns].to_csv(output_path, index=False, sep='\t')
-        else:
-            logger.warning(f"Unsupported file format. The file will be saved as csv by default.")
-            output_path += '.csv'
-            df[columns].to_csv(output_path, index=False, encoding='utf-8')
+        original_output_path = output_path
+        while True:
+            try:
+                current_output_path = original_output_path
+                if output_path.endswith('.csv'):
+                    df[columns].to_csv(output_path, index=False, encoding='utf-8')
+                elif output_path.endswith(('.xls', '.xlsx')):
+                    df[columns].to_excel(output_path, index=False)
+                elif output_path.endswith('.txt'):
+                    df[columns].to_csv(output_path, index=False, sep='\t')
+                else:
+                    logger.warning(f"Unsupported file format. The file will be saved as csv by default.")
+                    output_path += '.csv'
+                    df[columns].to_csv(output_path, index=False, encoding='utf-8')
+                logger.info(f"File saved successfully: {current_output_path}")
+                break
+            except (PermissionError, IOError, OSError) as e:
+                logger.error(f"Unable to save file: {str(e)}")
+                choice = input("Do you want to save again? (Y/N): ").strip().lower()
+                if choice == 'y':
+                    continue
+                else:
+                    logger.warning("The user canceled the save operation")
+                    break
+            except Exception as e:
+                logger.error(f"Unknown error: {str(e)}")
+                break

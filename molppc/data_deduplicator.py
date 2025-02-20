@@ -74,6 +74,7 @@ class DataDeduplicator:
         processed = []
         for name, group in grouped:
             if len(group) == 1:
+                group[self.target_col + '_new'] = group[self.target_col]
                 processed.append(self._mark_record(group, method='no change'))
                 continue
 
@@ -97,7 +98,9 @@ class DataDeduplicator:
             return pd.DataFrame()
 
         selected = counts.idxmax()
-        return self._mark_record(group[group[self.target_col] == selected].head(1), method='vote')
+        final_record = group[group[self.target_col] == selected].head(1).copy()
+        final_record[self.target_col + '_new'] = selected
+        return self._mark_record(final_record, method='vote')
 
     def _handle_continuous(self, group: pd.DataFrame) -> pd.DataFrame:
         """Handle continuous data"""
@@ -114,17 +117,18 @@ class DataDeduplicator:
 
         final_value = clean_values.mean()
         final_record = group.iloc[[values.sub(final_value).abs().argmin()]].copy()
-        final_record[self.target_col] = final_value
+        final_record[self.target_col + '_new'] = final_value
         return self._mark_record(final_record, method=method)
 
     def _handle_small_group(self, values: pd.Series, group: pd.DataFrame) -> pd.DataFrame:
         """Handle small sample groups"""
-        if len(values) == 1:
-            return self._mark_record(group, method="no change")
+        # if len(values) == 1:
+        #     group[self.target_col + '_new'] = group[self.target_col]
+        #     return self._mark_record(group, method="no change")
 
         final_value = values.mean()
         final_record = group.iloc[[values.sub(final_value).abs().argmin()]].copy()
-        final_record[self.target_col] = final_value
+        final_record[self.target_col + '_new'] = final_value
         return self._mark_record(final_record, method="<=3(mean)")
 
     def _remove_outliers(self, values: pd.Series):

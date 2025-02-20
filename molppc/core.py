@@ -34,6 +34,7 @@ class MolecularProcessor:
         self.deduplicator = None
         self.web_service = None
         self.process_key = 0
+        self.web_source = None
 
     def load_data(self,
                   input_data: Union[str, List[str], pd.DataFrame],
@@ -178,6 +179,7 @@ class MolecularProcessor:
             raise ValueError("Deduplicator not configured. Call config_deduplicator first.")
 
         self.df = self.deduplicator.deduplicate(self.df)
+        self.target_col = self.target_col + "_new"
 
     def config_web_request(self, source: str = 'pubchem',
                            interval: int = 0.3,
@@ -200,8 +202,10 @@ class MolecularProcessor:
         :param chemspider_api_key: Chemspider API key.
         :param comptox_api_key: Comptox API key.
         """
-        self.web_service = WebService(source, interval, retries, delay, max_workers, batch_limit, rest_duration,
-                                      chemspider_api_key, comptox_api_key)
+        self.web_source = source
+        self.web_service = WebService(source=source, interval=interval, retries=retries, delay=delay,
+                                      max_workers=max_workers, batch_limit=batch_limit, rest_duration=rest_duration,
+                                      chemspider_api_key=chemspider_api_key, comptox_api_key=comptox_api_key)
 
     @check_data_loaded
     def add_web_request(self, cas: bool = True, iupac: bool = True, smiles: bool = False) -> None:
@@ -220,15 +224,15 @@ class MolecularProcessor:
             input_type = 'smiles'
         results = self.web_service.get_properties(input_data.tolist(), props, input_type)
         column_map = {
-            'cas': 'CAS Number',
-            'iupac': 'IUPAC Name',
-            'smiles': 'Smiles'
+            'cas': 'CAS Number_' + self.web_source,
+            'iupac': 'IUPAC Name_' + self.web_source,
+            'smiles': 'Smiles_' + self.web_source
         }
-        for prop in props | ({'smiles'} if smiles else set()):
+        for prop in props:
             self.df[column_map[prop]] = [r[prop] for r in results]
 
         if smiles:
-            self.smiles_col, self.process_key = 'Smiles', 0
+            self.smiles_col, self.process_key = 'Smiles_' + self.web_source, 0
 
     @check_data_loaded
     def save_results(self, output_path: str, columns: Optional[List[str]] = None) -> None:

@@ -69,12 +69,13 @@ MP.config_web_request(
 ## Requirements
 - `Python>=3.8`
 - Core Dependencies:
-  - `requests>=2.25`
-  - `rdkit>=2024.9.2`
+  - `requests`
+  - `rdkit>=2023.3`
+  - `tqdm`
 - Optional Dependencies (install as needed):
   - `pubchempy>=1.0.4`: For PubChem integration
   - `chemspipy>=2.0.0`: For ChemSpider (requires API key)
-  - `install ctxpy>=0.0.1a7`: For CompTox Dashboard (requires API key)
+  - `ctx-python>=0.0.1a7`: For CompTox Dashboard (requires API key)
 
 ## License
 MIT License - See [LICENSE](LICENSE) for details

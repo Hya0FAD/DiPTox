@@ -7,4 +7,4 @@ from .data_deduplicator import DataDeduplicator
 from .logger import LogManager
 
 __all__ = ["MolecularProcessor", "ChemistryProcessor", "WebService", "DataHandler", "DataDeduplicator", "LogManager"]
-__version__ = "0.2.1"
+__version__ = "0.3.1"

@@ -53,7 +53,7 @@ class WebService:
         self._counter_lock = Lock()
         self._chemspider_api_key = chemspider_api_key
         self._comptox_api_key = comptox_api_key
-        self._cas_pattern = re.compile(r'\d+-\d+-\d')
+        self._cas_pattern = re.compile(r'^\d+-\d+-\d$')
         self._valid_sources = {
             DataSource.PUBCHEM: self._fetch_via_pubchem,
             DataSource.CHEMSPIDER: self._fetch_via_chemspider,
@@ -131,6 +131,24 @@ class WebService:
                 time.sleep(self.rest_duration)
                 self.request_count -= self.batch_limit
 
+    @staticmethod
+    def _get_inchikey(smiles):
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            logger.error("Invalid SMILES")
+            raise
+        inchikey = Chem.MolToInchiKey(mol)
+        return inchikey
+
+    def _is_valid_cas(self, cas: str) -> bool:
+        if not isinstance(cas, str):
+            return False
+        return bool(self._cas_pattern.match(cas.strip()))
+
+    @staticmethod
+    def _empty_result(properties: Set[str]) -> dict:
+        return {prop: None for prop in properties}
+
     def _fetch_via_pubchem(self, identifier: str,
                            properties: Set[str],
                            identifier_type: str) -> Dict[str, Optional[str]]:
@@ -139,20 +157,20 @@ class WebService:
         try:
             from pubchempy import get_compounds, Compound
             if identifier_type == 'smiles':
-                compounds = get_compounds(identifier, 'smiles')
+                identifier = self._get_inchikey(identifier)
+                compounds = get_compounds(identifier, 'inchikey')
             elif identifier_type == 'cas':
-                compounds = get_compounds(identifier, 'name')
+                if self._is_valid_cas(identifier):
+                    compounds = get_compounds(identifier, 'name')
+                else:
+                    return self._empty_result(properties)
             else:
                 logger.error(f"Invalid identifier type {identifier_type}")
                 raise
 
-            # if isinstance(compounds, dict) and 'Fault' in compounds:
-            #     if 'ServerBusy' in compounds.get('Fault', ''):
-            #         raise requests.exceptions.HTTPError()
-
             self._increment_request_count()
             if not compounds:
-                return {prop: None for prop in properties}
+                return self._empty_result(properties)
 
             compound = compounds[0]
             result['cid'] = str(compound.cid)
@@ -191,6 +209,10 @@ class WebService:
 
         result = {}
         try:
+            if identifier_type == 'smiles':
+                identifier = self._get_inchikey(identifier)
+            if identifier_type == 'cas' and not self._is_valid_cas(identifier):
+                return self._empty_result(properties)
             from chemspipy import ChemSpider
             cs = ChemSpider(self._chemspider_api_key)
             search_results = cs.search(identifier)
@@ -203,14 +225,14 @@ class WebService:
                     time.sleep(2)
                     continue
             if search_results.status != 'Complete':
-                return {prop: None for prop in properties}
+                return self._empty_result(properties)
 
             compound = search_results[0]
             print(compound)
             if 'cas' in properties:
-                result['cas'] = compound.get('cas')
+                result['cas'] = compound.get('casrn')
             if 'iupac' in properties:
-                result['iupac'] = compound.get('iupac_name')
+                result['iupac'] = compound.get('iupacName')
             if 'smiles' in properties:
                 result['smiles'] = compound.smiles
 
@@ -230,25 +252,27 @@ class WebService:
 
         result = {}
         try:
+            if identifier_type == 'smiles':
+                identifier = self._get_inchikey(identifier)
+            if identifier_type == 'cas' and not self._is_valid_cas(identifier):
+                return self._empty_result(properties)
             import ctxpy as ctx
             comptox = ctx.Chemical(x_api_key=self._comptox_api_key)
             search_results = comptox.search(by='equals', word=identifier)
             self._increment_request_count()
 
-            if not search_results:
-                return {prop: None for prop in properties}
+            if not search_results or isinstance(search_results, dict):
+                return self._empty_result(properties)
 
             dtxsid = search_results[0].get('dtxsid')
             detail = comptox.details(by='dtxsid', word=dtxsid)
             self._increment_request_count()
-            if detail.success and detail.records:
-                record = detail.records[0]
-                if 'cas' in properties:
-                    result['cas'] = record.get('casrn')
-                if 'iupac' in properties:
-                    result['iupac'] = record.get('iupac_name')
-                if 'smiles' in properties:
-                    result['smiles'] = record.get('smiles')
+            if 'cas' in properties:
+                result['cas'] = detail.get('casrn')
+            if 'iupac' in properties:
+                result['iupac'] = detail.get('iupacName')
+            if 'smiles' in properties:
+                result['smiles'] = detail.get('smiles')
 
             return result
 
@@ -263,27 +287,18 @@ class WebService:
         result = {}
         try:
             if identifier_type == 'smiles':
-                mol = Chem.MolFromSmiles(identifier)
-                if not mol:
-                    logger.error("Invalid SMILES")
-                    raise
-                identifier = Chem.MolToInchiKey(mol)
+                identifier = self._get_inchikey(identifier)
+            if identifier_type == 'cas' and not self._is_valid_cas(identifier):
+                return self._empty_result(properties)
 
             base_url = f"https://cactus.nci.nih.gov/chemical/structure/{identifier}"
-
-            if 'cas' in properties:
-                response = requests.get(f"{base_url}/cas", timeout=10)
-                self._increment_request_count()
-                result['cas'] = response.text.strip() if response.ok else None
-            if 'iupac' in properties:
-                response = requests.get(f"{base_url}/iupac_name", timeout=10)
-                self._increment_request_count()
-                result['iupac'] = response.text.strip() if response.ok else None
-            if 'smiles' in properties:
-                response = requests.get(f"{base_url}/smiles", timeout=10)
-                self._increment_request_count()
-                result['smiles'] = response.text.strip() if response.ok else None
-
+            prop_map = {'cas': '/cas', 'iupac': '/iupac_name', 'smiles': '/smiles'}
+            result = {}
+            for prop in properties:
+                if url_suffix := prop_map.get(prop):
+                    if response := requests.get(url=f"{base_url}{url_suffix}", timeout=10):
+                        self._increment_request_count()
+                        result[prop] = response.text.strip() if response.ok else None
             return result
 
         except Exception as e:
