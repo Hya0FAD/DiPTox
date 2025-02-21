@@ -1,5 +1,5 @@
 # MolPPC - A Python Package for Molecular Data Preprocessing
-A toolkit for batch querying chemical properties from multiple web sources.
+A toolkit for molecular data preprocessing, standardization, and multi-source chemical identifier integration.
 
 ## Features
 - **Molecular Preprocessing**: 
@@ -18,7 +18,7 @@ A toolkit for batch querying chemical properties from multiple web sources.
 - **Chemical Identifier Integration**:
   - CAS number validation
   - IUPAC name standardization
-  - SMILES/SMARTS processing
+  - SMILES processing
   
 - **Web Data Integration**:
   - Multi-source chemical property queries
@@ -72,6 +72,8 @@ MP.config_web_request(
   - `requests`
   - `rdkit>=2023.3`
   - `tqdm`
+  - `openpyxl`
+  - `scipy`
 - Optional Dependencies (install as needed):
   - `pubchempy>=1.0.4`: For PubChem integration
   - `chemspipy>=2.0.0`: For ChemSpider (requires API key)
