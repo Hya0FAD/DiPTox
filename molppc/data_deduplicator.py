@@ -14,6 +14,7 @@ class DataDeduplicator:
                  condition_cols: Optional[List[str]] = None,
                  data_type: str = "continuous",
                  method: str = "auto",
+                 p_threshold: float = 0.05,
                  custom_method: Optional[Callable[[pd.Series], Tuple[pd.Series, str]]] = None):
         """
         :param smiles_col: The name of the SMILES column
@@ -21,6 +22,7 @@ class DataDeduplicator:
         :param condition_cols: Columns representing conditions (e.g., temperature, pressure, etc.)
         :param data_type: Data type - "discrete" or "continuous"
         :param method: Existing method of data deduplication (e.g., auto, vote, 3sigma, IQR.)
+        :param p_threshold: Threshold of normal distribution
         :param custom_method: Custom method of data deduplication
         """
         self.smiles_col = smiles_col
@@ -29,6 +31,7 @@ class DataDeduplicator:
         self.data_type = data_type
         self.method = method
         self.custom_method = custom_method
+        self._p_threshold = p_threshold
 
         if custom_method and not callable(custom_method):
             raise ValueError("custom_outlier_handler must be a callable function")
@@ -49,7 +52,7 @@ class DataDeduplicator:
         grouped = df.groupby(group_keys, group_keys=False, sort=False)
 
         if self.target_col:
-            return self._process_with_target(grouped)
+            return self._process_with_target(grouped, self._p_threshold)
         return self._process_without_target(grouped)
 
     def _validate_columns(self, df: pd.DataFrame):
@@ -67,7 +70,7 @@ class DataDeduplicator:
         logger.info("Performing simple deduplication by SMILES")
         return grouped.first().reset_index()
 
-    def _process_with_target(self, grouped) -> pd.DataFrame:
+    def _process_with_target(self, grouped, p_threshold: float) -> pd.DataFrame:
         """Complex deduplication with target value"""
         logger.info(f"Processing deduplication with target ({self.data_type} data)")
 
@@ -81,7 +84,7 @@ class DataDeduplicator:
             if self.data_type == "discrete":
                 processed_group = self._handle_discrete(group)
             else:
-                processed_group = self._handle_continuous(group)
+                processed_group = self._handle_continuous(group, p_threshold)
 
             if not processed_group.empty:
                 processed.append(processed_group)
@@ -102,7 +105,7 @@ class DataDeduplicator:
         final_record[self.target_col + '_new'] = selected
         return self._mark_record(final_record, method='vote')
 
-    def _handle_continuous(self, group: pd.DataFrame) -> pd.DataFrame:
+    def _handle_continuous(self, group: pd.DataFrame, p_threshold: float) -> pd.DataFrame:
         """Handle continuous data"""
         n = len(group)
         values = group[self.target_col]
@@ -113,7 +116,7 @@ class DataDeduplicator:
         if self.custom_method:
             clean_values, method = self.custom_method(values)
         else:
-            clean_values, method = self._remove_outliers(values)
+            clean_values, method = self._remove_outliers(values, p_threshold)
 
         final_value = clean_values.mean()
         final_record = group.iloc[[values.sub(final_value).abs().argmin()]].copy()
@@ -131,12 +134,12 @@ class DataDeduplicator:
         final_record[self.target_col + '_new'] = final_value
         return self._mark_record(final_record, method="<=3(mean)")
 
-    def _remove_outliers(self, values: pd.Series):
+    def _remove_outliers(self, values: pd.Series, p_threshold: float):
         """Outlier removal (3sigma/IQR)"""
         if self.data_type == "continuous":
             if self.method == "auto":
                 # Automatically select method: use IQR for non-normal distributions
-                if self._is_normal_distribution(values):
+                if self._is_normal_distribution(values, p_threshold):
                     return self._3sigma_filter(values), '3sigma'
                 return self._iqr_filter(values), 'IQR'
             elif self.method == "IQR":
@@ -145,7 +148,7 @@ class DataDeduplicator:
                 return self._3sigma_filter(values), '3sigma'
 
     @staticmethod
-    def _is_normal_distribution(values: pd.Series, p_threshold: float = 0.05) -> bool:
+    def _is_normal_distribution(values: pd.Series, p_threshold: float) -> bool:
         """Normal distribution test (Shapiro-Wilk)"""
         from scipy.stats import shapiro
         stat, p = shapiro(values)

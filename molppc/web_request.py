@@ -131,15 +131,6 @@ class WebService:
                 time.sleep(self.rest_duration)
                 self.request_count -= self.batch_limit
 
-    @staticmethod
-    def _get_inchikey(smiles):
-        mol = Chem.MolFromSmiles(smiles)
-        if not mol:
-            logger.error("Invalid SMILES")
-            raise
-        inchikey = Chem.MolToInchiKey(mol)
-        return inchikey
-
     def _is_valid_cas(self, cas: str) -> bool:
         if not isinstance(cas, str):
             return False
@@ -155,15 +146,20 @@ class WebService:
         """Fetch through PubChem's API"""
         result = {}
         try:
+            if identifier is None:
+                return self._empty_result(properties)
+
             from pubchempy import get_compounds, Compound
-            if identifier_type == 'smiles':
-                identifier = self._get_inchikey(identifier)
-                compounds = get_compounds(identifier, 'inchikey')
-            elif identifier_type == 'cas':
+
+            if identifier_type == 'cas':
                 if self._is_valid_cas(identifier):
                     compounds = get_compounds(identifier, 'name')
                 else:
                     return self._empty_result(properties)
+            elif identifier_type == 'smiles':
+                compounds = get_compounds(identifier, 'smiles')
+            elif identifier_type == 'inchikey':
+                compounds = get_compounds(identifier, 'inchikey')
             else:
                 logger.error(f"Invalid identifier type {identifier_type}")
                 raise
@@ -173,16 +169,15 @@ class WebService:
                 return self._empty_result(properties)
 
             compound = compounds[0]
-            result['cid'] = str(compound.cid)
+            result.update({
+                'cid': str(compound.cid),
+                'cas': self._parse_pubchem_cas_direct(compound),
+                'iupac': compound.iupac_name,
+                'smiles': compound.canonical_smiles,
+                'inchikey': compound.inchikey
+            })
 
-            if 'cas' in properties:
-                result['cas'] = self._parse_pubchem_cas_direct(compound)
-            if 'iupac' in properties:
-                result['iupac'] = compound.iupac_name
-            if 'smiles' in properties:
-                result['smiles'] = compound.canonical_smiles
-
-            return result
+            return {k: v for k, v in result.items() if k in properties}
 
         except Exception as e:
             logger.error(f"PubChem query failed for {identifier}: {str(e)}")
@@ -209,11 +204,15 @@ class WebService:
 
         result = {}
         try:
-            if identifier_type == 'smiles':
-                identifier = self._get_inchikey(identifier)
-            if identifier_type == 'cas' and not self._is_valid_cas(identifier):
+            if identifier is None:
                 return self._empty_result(properties)
+
+            if identifier_type == 'cas':
+                if not self._is_valid_cas(identifier):
+                    return self._empty_result(properties)
+
             from chemspipy import ChemSpider
+
             cs = ChemSpider(self._chemspider_api_key)
             search_results = cs.search(identifier)
             self._increment_request_count()
@@ -224,23 +223,29 @@ class WebService:
                 else:
                     time.sleep(2)
                     continue
-            if search_results.status != 'Complete':
+            if search_results.status != 'Complete' or not search_results:
                 return self._empty_result(properties)
 
             compound = search_results[0]
-            print(compound)
-            if 'cas' in properties:
-                result['cas'] = compound.get('casrn')
-            if 'iupac' in properties:
-                result['iupac'] = compound.get('iupacName')
-            if 'smiles' in properties:
-                result['smiles'] = compound.smiles
+            result.update({
+                'smiles': compound.smiles,
+                'inchikey': compound.inchikey
+            })
 
-            return result
+            return {k: v for k, v in result.items() if k in properties}
 
         except Exception as e:
             logger.error(f"ChemSpider query failed: {str(e)}")
             raise
+
+    @staticmethod
+    def _get_inchikey(smiles):
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            logger.error("Invalid SMILES")
+            raise
+        inchikey = Chem.MolToInchiKey(mol)
+        return inchikey
 
     def _fetch_via_comptox(self, identifier: str,
                            properties: Set[str],
@@ -252,11 +257,17 @@ class WebService:
 
         result = {}
         try:
+            if identifier is None:
+                return self._empty_result(properties)
+
+            if identifier_type == 'cas':
+                if not self._is_valid_cas(identifier):
+                    return self._empty_result(properties)
             if identifier_type == 'smiles':
                 identifier = self._get_inchikey(identifier)
-            if identifier_type == 'cas' and not self._is_valid_cas(identifier):
-                return self._empty_result(properties)
+
             import ctxpy as ctx
+
             comptox = ctx.Chemical(x_api_key=self._comptox_api_key)
             search_results = comptox.search(by='equals', word=identifier)
             self._increment_request_count()
@@ -267,14 +278,16 @@ class WebService:
             dtxsid = search_results[0].get('dtxsid')
             detail = comptox.details(by='dtxsid', word=dtxsid)
             self._increment_request_count()
-            if 'cas' in properties:
-                result['cas'] = detail.get('casrn')
-            if 'iupac' in properties:
-                result['iupac'] = detail.get('iupacName')
-            if 'smiles' in properties:
-                result['smiles'] = detail.get('smiles')
 
-            return result
+            result.update({
+                'dtxsid': dtxsid,
+                'cas': detail.get('casrn'),
+                'iupac': detail.get('iupacName'),
+                'smiles': detail.get('smiles'),
+                'inchikey': detail.get('inchikey')
+            })
+
+            return {k: v for k, v in result.items() if k in properties}
 
         except Exception as e:
             logger.error(f"CompTox query failed: {str(e)}")
@@ -286,19 +299,22 @@ class WebService:
         """Fetch through Cactus's API"""
         result = {}
         try:
-            if identifier_type == 'smiles':
-                identifier = self._get_inchikey(identifier)
-            if identifier_type == 'cas' and not self._is_valid_cas(identifier):
+            if identifier is None:
                 return self._empty_result(properties)
 
+            if identifier_type == 'cas':
+                if not self._is_valid_cas(identifier):
+                    return self._empty_result(properties)
+
             base_url = f"https://cactus.nci.nih.gov/chemical/structure/{identifier}"
-            prop_map = {'cas': '/cas', 'iupac': '/iupac_name', 'smiles': '/smiles'}
+            prop_map = {'cas': '/cas', 'iupac': '/iupac_name', 'smiles': '/smiles', 'inchikey': '/inchikey'}
             result = {}
             for prop in properties:
                 if url_suffix := prop_map.get(prop):
                     if response := requests.get(url=f"{base_url}{url_suffix}", timeout=10):
                         self._increment_request_count()
                         result[prop] = response.text.strip() if response.ok else None
+
             return result
 
         except Exception as e:

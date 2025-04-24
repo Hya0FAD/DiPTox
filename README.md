@@ -1,5 +1,6 @@
-# MolPPC - A Python Package for Molecular Data Preprocessing
-A toolkit for molecular data preprocessing, standardization, and multi-source chemical identifier integration.
+# MolPPC - A Python Package for Molecular Preprocessing Pipeline for Chemistry
+
+A toolkit for molecular data preprocessing, standardization, and multi-source molecular identifier integration.
 
 ## Features
 - **Molecular Preprocessing**: 
@@ -27,7 +28,7 @@ A toolkit for molecular data preprocessing, standardization, and multi-source ch
 
 ## Installation
 ```bash
-pip install molppc
+pip install -i https://test.pypi.org/simple/ molppc
 ```
 ## Quick Start
 ```{python}
@@ -40,15 +41,28 @@ MP = MolecularProcessor()
 MP.load_data(input_data='file_path/list/dataframe', smiles_col, target_col, cas_col)
 
 # Configure preprocessing
-MP.process(neutralize, remove_salts, check_valid_atoms, remove_stereo, remove_hs, keep_largest_fragment, hac_threshold, sanitize)
+MP.preprocess(remove_salts, remove_solvents, remove_mixtures, remove_inorganic, neutralize, check_valid_atoms, remove_stereo, remove_hs, keep_largest_fragment, hac_threshold)
+# remove_salts: Whether to remove salts.
+# remove_solvents: Whether to remove solvent molecules.
+# remove_mixtures: Whether to remove mixtures.
+# remove_inorganic: Whether to remove inorganic molecules.
+# neutralize: Whether to neutralize charges.
+# check_valid_atoms: Whether to check for valid atoms.
+# remove_stereo: Whether to remove stereochemistry.
+# remove_hs: Whether to remove hydrogen atoms.
+# keep_largest_fragment: Whether to keep the largest fragment.
+# hac_threshold: Threshold for salt removal (heavy atoms count).
 
 # Configure deduplication
 MP.config_deduplicator(condition_cols, data_type, method, custom_method)
-MP.deduplicate_data()
+MP.data_deduplicate()
 
 # Configure web queries
 MP.config_web_request(source='pubchem/chemspider/comptox/cactus', max_workers, ...)
-MP.add_web_request(cas, iupac, smiles)
+MP.web_request(cas, iupac, smiles)
+
+# Substructure search
+MP.substructure_search(query_pattern, is_smarts=True)
 
 # Save results
 MP.save_results(output_path='file_path')
@@ -77,7 +91,7 @@ MP.config_web_request(
 - Optional Dependencies (install as needed):
   - `pubchempy>=1.0.4`: For PubChem integration
   - `chemspipy>=2.0.0`: For ChemSpider (requires API key)
-  - `ctx-python>=0.0.1a7`: For CompTox Dashboard (requires API key)
+  - `ctx-python>=0.0.1a7`: For CompTox Dashboard (requires API key and Python>=3.10)
 
 ## License
 MIT License - See [LICENSE](LICENSE) for details

@@ -1,5 +1,6 @@
 # molppc/chem_processor.py
 from contextlib import redirect_stderr
+from importlib import resources
 import io
 from rdkit import Chem
 from rdkit.Chem import AllChem, SaltRemover, rdmolops
@@ -13,11 +14,17 @@ class ChemistryProcessor:
 
     def __init__(self):
         self.remover = SaltRemover.SaltRemover()
-        self._neutralization_rules = self._default_rules()
-        self._valid = {'Br', 'C', 'Cl', 'F', 'H', 'I', 'N', 'O', 'P', 'S'}
+        self._default_salts()
+        self._solvents = self._default_solvents()
+        self._neutralization_rules = self._default_neutralization_rules()
+        self._valid = {'Br', 'C', 'Cl', 'F', 'H', 'I', 'N', 'O', 'P', 'S', 'Si', 'As', 'Se', 'Te', 'At'}
+        self._custom_salts = []
+        self._removed_salts = []
+        self._custom_solvents = []
+        self._removed_solvents = []
 
     @staticmethod
-    def _default_rules() -> List[Tuple[str, str]]:
+    def _default_neutralization_rules() -> List[Tuple[str, str]]:
         """Default charge neutralization rules"""
         return [
             ('[n+;H]', 'n'),
@@ -30,6 +37,33 @@ class ChemistryProcessor:
             ('[$([S-]=O)]', 'S'),
             ('[$([N-]C=O)]', 'N'),
         ]
+
+    def _default_salts(self):
+        """Default salts."""
+        salt_mols = []
+        with resources.open_text("molppc", "salts.smi") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    name, smarts = line.split("\t")
+                    mol = Chem.MolFromSmarts(smarts)
+                    if mol:
+                        salt_mols.append(mol)
+        self.remover.salts = salt_mols
+
+    @staticmethod
+    def _default_solvents():
+        """Default solvents."""
+        solvent_mols = []
+        with resources.open_text("molppc", "solvents.smi") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    name, smarts = line.split("\t")
+                    mol = Chem.MolFromSmiles(smarts)
+                    if mol:
+                        solvent_mols.append(mol)
+        return solvent_mols
 
     def add_neutralization_rule(self, reactant: str, product: str):
         """
@@ -70,9 +104,7 @@ class ChemistryProcessor:
         logger.info(f"New rule added: {reactant} -> {product}")
 
     def remove_neutralization_rule(self, reactant: str):
-        """
-        Remove a matching rule from the neutralization rule list.
-        """
+        """Remove a matching rule from the neutralization rule list."""
         initial_len = len(self._neutralization_rules)
         self._neutralization_rules = [
             rule for rule in self._neutralization_rules if rule[0] != reactant
@@ -83,18 +115,14 @@ class ChemistryProcessor:
             logger.warning(f"No matching rule found: {reactant}")
 
     def add_effective_atom(self, atom):
-        """
-        Add a new atom symbol to the list of valid atoms.
-        """
+        """Add a new atom symbol to the list of valid atoms."""
         if isinstance(atom, str):
             self._valid.add(atom)
         else:
             logger.info(f"Invalid atom format: {atom}. It should be a string representing an atom symbol.")
 
     def delete_effective_atom(self, atom):
-        """
-        Remove an atom symbol from the list of valid atoms.
-        """
+        """Remove an atom symbol from the list of valid atoms."""
         if isinstance(atom, str):
             if atom in self._valid:
                 self._valid.remove(atom)
@@ -103,6 +131,68 @@ class ChemistryProcessor:
                 logger.info(f"Atom {atom} is not in the valid atoms list. No changes made.")
         else:
             logger.info(f"Invalid atom format: {atom}. It should be a string representing an atom symbol.")
+
+    def add_default_salt(self, smarts: str):
+        mol = Chem.MolFromSmarts(smarts)
+        if mol:
+            canon_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+            existing_smiles = {
+                Chem.MolToSmiles(m, isomericSmiles=True, canonical=True)
+                for m in self._custom_salts
+            }
+            if canon_smiles not in existing_smiles:
+                self._custom_salts.append(mol)
+                logger.info(f"Default salt added: {smarts}")
+        else:
+            logger.warning(f"Invalid SMILES: {smarts}")
+
+    def remove_default_salt(self, smarts: str):
+        target = Chem.MolFromSmarts(smarts)
+        if not target:
+            logger.warning(f"Invalid SMILES: {smarts}")
+            return
+        target_smiles = Chem.MolToSmiles(target, isomericSmiles=True, canonical=True)
+        existing_smiles = {
+            Chem.MolToSmiles(m, isomericSmiles=True, canonical=True)
+            for m in self._removed_salts
+        }
+        if target_smiles not in existing_smiles:
+            self._removed_salts.append(target)
+            logger.info(f"Default salt removed globally: {smarts}")
+
+    def add_default_solvents(self, smarts: str):
+        mol = Chem.MolFromSmarts(smarts)
+        if mol:
+            canon_smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+            existing_smiles = {
+                Chem.MolToSmiles(m, isomericSmiles=True, canonical=True)
+                for m in self._custom_solvents
+            }
+            if canon_smiles not in existing_smiles:
+                self._custom_solvents.append(mol)
+                logger.info(f"Default solvent added: {smarts}")
+        else:
+            logger.warning(f"Invalid SMILES: {smarts}")
+
+    def remove_default_solvents(self, smarts: str):
+        target = Chem.MolFromSmarts(smarts)
+        if not target:
+            logger.warning(f"Invalid SMILES: {smarts}")
+            return
+        target_smiles = Chem.MolToSmiles(target, isomericSmiles=True, canonical=True)
+        existing_smiles = {
+            Chem.MolToSmiles(m, isomericSmiles=True, canonical=True)
+            for m in self._removed_solvents
+        }
+        if target_smiles not in existing_smiles:
+            self._removed_solvents.append(target)
+            logger.info(f"Default solvent removed globally: {smarts}")
+
+    @staticmethod
+    def CombineFragments(fragments: list[Chem.Mol]) -> Chem.Mol:
+        """Combine multiple fragments into a single molecule."""
+        smiles = [Chem.MolToSmiles(f, isomericSmiles=True, canonical=True) for f in fragments]
+        return Chem.MolFromSmiles('.'.join(smiles))
 
     @staticmethod
     def smiles_to_mol(smiles: str, sanitize: bool = True) -> Optional[Chem.Mol]:
@@ -118,7 +208,7 @@ class ChemistryProcessor:
 
     @staticmethod
     def standardize_smiles(mol: Chem.Mol,
-                           isomeric: bool = False,
+                           isomeric: bool = True,
                            canonical: bool = True) -> Optional[str]:
         """
         Generate standardized SMILES.
@@ -147,26 +237,112 @@ class ChemistryProcessor:
                 mol = Chem.ReplaceSubstructs(mol, patt, repl)[0]
         return mol
 
-    def remove_salts(self, mol: Chem.Mol,
-                     hac_threshold: int = 3,
-                     keep_largest: bool = False) -> Optional[Chem.Mol]:
-        """
-        Remove salts/solvents.
-        :param hac_threshold: Retain fragments with more than this number of heavy atoms.
-        :param keep_largest: Whether to keep the largest fragment instead of the first valid fragment.
-        """
+    def remove_salts(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
+        """Remove salts."""
+        combined = [mol for mol in self.remover.salts + self._custom_salts]
+        combined = [mol for mol in combined
+                    if not any(mol.HasSubstructMatch(removed) and removed.HasSubstructMatch(mol)
+                               for removed in self._removed_salts)]
+        self.remover.salts = combined
         stripped = self.remover.StripMol(mol)
-        fragments = list(rdmolops.GetMolFrags(stripped, asMols=True))
-        if len(fragments) > 1:
-            fragments = [f for f in fragments if f.GetNumAtoms() > hac_threshold]
-        if len(fragments) > 1:
-            logger.warning(f"{Chem.MolToSmiles(mol)} contains >1 fragment with >" + str(hac_threshold) + " heavy atoms")
+        if stripped.GetNumAtoms() == 0:
             return None
+
+        fragments = Chem.GetMolFrags(stripped, asMols=True)
+        if len(fragments) == 1:
+            return stripped
+        first_smiles = Chem.MolToSmiles(fragments[0], canonical=True)
+        all_identical = all(
+            Chem.MolToSmiles(frag, canonical=True) == first_smiles
+            for frag in fragments[1:]
+        )
+        if all_identical:
+            return fragments[0]
+        else:
+            combined = fragments[0]
+            for frag in fragments[1:]:
+                combined = self.CombineFragments([combined, frag])
+            return combined
+
+    def remove_solvents(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
+        """Remove solvents."""
+        combined = [mol for mol in self._solvents + self._custom_solvents]
+        combined = [mol for mol in combined
+                    if not any(mol.HasSubstructMatch(removed) and removed.HasSubstructMatch(mol)
+                               for removed in self._removed_solvents)]
+        self._solvents = combined
+        fragments = Chem.GetMolFrags(mol, asMols=True)
+        if len(fragments) == 1:
+            return mol
+        if len(fragments) == 0:
+            return None
+
+        non_solvent = [
+            frag for frag in fragments
+            if not any(frag.HasSubstructMatch(solvent) and solvent.HasSubstructMatch(frag) for solvent in self._solvents)
+        ]
+        if not non_solvent:
+            return None
+
+        first_smiles = Chem.MolToSmiles(non_solvent[0], canonical=True)
+        all_identical = all(
+            Chem.MolToSmiles(frag, canonical=True) == first_smiles
+            for frag in non_solvent[1:]
+        )
+        if all_identical:
+            return non_solvent[0]
+        else:
+            combined = non_solvent[0]
+            for frag in non_solvent[1:]:
+                combined = self.CombineFragments([combined, frag])
+            return combined
+
+    @staticmethod
+    def remove_mixtures(mol: Chem.Mol,
+                        hac_threshold: int = 3,
+                        keep_largest: bool = True,) -> Optional[Chem.Mol]:
+        """Remove mixtures.
+        :param keep_largest: Whether to keep the largest molecules.
+        :param hac_threshold: Threshold of hac molecules."""
+        fragments = list(rdmolops.GetMolFrags(mol, asMols=True))
+        if len(fragments) > 1:
+            fragments = [f for f in fragments if f.GetNumHeavyAtoms() > hac_threshold]
+        if len(fragments) > 1:
+            logger.warning(
+                f"{Chem.MolToSmiles(mol)} contains >1 fragment with >" + str(hac_threshold) + " heavy atoms")
+            return max(fragments, key=lambda x: x.GetNumHeavyAtoms()) if keep_largest else None
         elif len(fragments) == 0:
-            logger.warning(f"{Chem.MolToSmiles(mol)} contains no fragments with >" + str(hac_threshold) + " heavy atoms")
+            logger.warning(
+                f"{Chem.MolToSmiles(mol)} contains no fragments with >" + str(hac_threshold) + " heavy atoms")
             return None
         else:
-            return max(fragments, key=lambda x: x.GetNumAtoms()) if keep_largest else fragments[0]
+            return fragments[0]
+
+    @staticmethod
+    def remove_inorganic(mol: Chem.Mol) -> Optional[Chem.Mol]:
+        """Remove inorganic atoms"""
+        has_carbon = any(atom.GetSymbol() == 'C' for atom in mol.GetAtoms())
+        if not has_carbon:
+            return None
+
+        inorganic_patterns = [
+            'O=C=O',  # CO2
+            'C(=O)=O',  # CO2
+            '[C-]#[O+]',  # CO
+            'C#N',  # HCN
+            'S=C=S',  # CS2
+            'C(=S)=S',  # CS2
+            '[N-]=C=O',
+            '[S-]C#N',
+            '[O-]C#N',
+            '[C]'
+        ]
+        for pattern in inorganic_patterns:
+            q = Chem.MolFromSmarts(pattern)
+            if q and Chem.MolToSmiles(mol) == Chem.MolToSmiles(q):
+                return None
+
+        return mol
 
     def effective_atom(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
         """
@@ -206,7 +382,8 @@ class ChemistryProcessor:
         return cls.create_pipeline(
             processor_instance.remove_hydrogens,
             processor_instance.remove_stereochemistry,
-            processor_instance.neutralize_charges,
             lambda mol: processor_instance.remove_salts(mol),
+            processor_instance.remove_inorganic,
+            processor_instance.neutralize_charges,
             processor_instance.effective_atom,
         )
