@@ -67,6 +67,8 @@ MP.substructure_search(query_pattern, is_smarts=True)
 # Save results
 MP.save_results(output_path='file_path')
 ```
+For more detailed introduction, please refer to the `UseExample.py` file.
+
 ## Advanced Configuration
 ### Web Service Integration
 - `PubChem`: https://pubchem.ncbi.nlm.nih.gov/
