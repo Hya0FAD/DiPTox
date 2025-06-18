@@ -1,6 +1,8 @@
 # 安装
 # pip install -i https://test.pypi.org/simple/ molppc
-# 要求：python>=3.10, rdkit>=2023.3, requests, tqdm, scipy, openpyxl, pubchempy, ctx-python, chemspipy, xlrd
+# 要求：python>=3.8, rdkit>=2023.3, requests, tqdm, scipy, openpyxl,
+# 非必须库：pubchempy, ctx-python, chemspipy
+# 目前最新版：0.11.3
 
 # 调用1：文件处理全流程
 from molppc import MolecularProcessor
@@ -16,8 +18,8 @@ a.config_deduplicator(data_type='discrete', method='vote')
 # condition_cols：以列表形式放条件列，如['pH','temperature']
 # custom_method：放自定义异常值处理函数
 a.data_deduplicate()
-# a.config_web_request(source='comptox/cactus/pubchem', comptox_api_key='your_key', max_workers=4)
-# a.web_request(send='smiles', request=['cas', 'iupac'])
+a.config_web_request(source='comptox/cactus/pubchem', comptox_api_key='your_key', max_workers=4)
+a.web_request(send='smiles', request=['cas', 'iupac'])
 a.save_results(r"FileName.xlsx/.csv/.txt/.sdf/.smi")
 
 # 调用2：单独的smiles处理全流程
@@ -44,7 +46,9 @@ smiles = [
     'OC[C@@H](O)[C@@H](O)[C@H](O)[C@H](O)CO',
     'C1=C(C=C(C(=C1O)O)O)C(=O)OC2=CC(=CC(=C2O)O)C(=O)OC[C@@H]3[C@H]([C@@H]([C@H]([C@@H](O3)OC(=O)C4=CC(=C(C(=C4)OC(=O)C5=CC(=C(C(=C5)O)O)O)O)O)OC(=O)C6=CC(=C(C(=C6)OC(=O)C7=CC(=C(C(=C7)O)O)O)O)O)OC(=O)C8=CC(=C(C(=C8)OC(=O)C9=CC(=C(C(=C9)O)O)O)O)O)OC(=O)C1=CC(=C(C(=C1)OC(=O)C1=CC(=C(C(=C1)O)O)O)O)O',
     'C1=CC(=C2C(=C1)OC(O2)(F)F)C3=CNC=C3C#N',
-    'C#C'
+    'C#C',
+    'OC(C(O)C(=O)O)C(=O)O.CCC',
+    'CO'
 ]
 b.load_data(input_data=smiles, smiles_col='SMILES')
 b.remove_neutralization_rule('[$([N-]C=O)]')  # 删除中和规则
@@ -52,6 +56,7 @@ b.add_neutralization_rule('[$([N-]C=O)]', 'N')  # 添加中和规则
 b.manage_atom_rules(atoms=['Si', 'Zr'], add=True)  # 添加/删除原子识别
 b.manage_default_salt(salts=['II', '[Hg+2]', '[Ba+2]'], add=True)  # 添加/删除脱盐的盐类
 b.manage_default_solvent(solvents='CCC', add=True)
+b.display_processing_rules()
 b.preprocess(remove_solvents=True, neutralize=True, remove_inorganic=True, remove_mixtures=False, check_valid_atoms=False, remove_stereo=False, keep_largest_fragment=False)
 # remove_salts: 是否脱盐，默认为True
 # remove_solvents: 是否除溶剂，默认为True
@@ -63,13 +68,15 @@ b.preprocess(remove_solvents=True, neutralize=True, remove_inorganic=True, remov
 # check_valid_atoms: 是否检查有效原子，默认为False
 # remove_stereo: 是否去除立体化学，默认为False
 # remove_hs: 是否去除显式氢，默认为True
+b.filter_by_atom_count(min_total_atoms=4)
 b.config_deduplicator()  # 不写配置是SMILES去重
 b.data_deduplicate()
 b.substructure_search(query_pattern='[C@@H]', is_smarts=True)  # 子结构判断
-b.config_web_request(source='comptox/cactus/pubchem', comptox_api_key='your_key', max_workers=4)
-b.web_request(send='smiles', request=['cas', 'iupac'])
-b.save_results('FileName.xlsx')
+# b.config_web_request(source='comptox/cactus/pubchem', comptox_api_key='your_key', max_workers=4)
+# b.web_request(send='smiles', request=['cas', 'iupac'])
+# b.save_results('FileName.xlsx')
 print(b.df['Canonical smiles'])
+print(len(b.chem_processor.remover.salts))
 
 # 调用3：cas获取smiles后处理
 from molppc import MolecularProcessor

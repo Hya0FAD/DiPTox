@@ -36,11 +36,15 @@ class DataDeduplicator:
         if custom_method and not callable(custom_method):
             raise ValueError("custom_outlier_handler must be a callable function")
 
-        if data_type not in ["discrete", "continuous", None]:
-            raise ValueError("Invalid data_type. Must be 'discrete' or 'continuous'")
+        if data_type not in ["smiles", "discrete", "continuous", None]:
+            raise ValueError("Invalid data_type. Must be 'discrete', 'continuous', and 'smiles'")
 
         if target_col and not condition_cols:
             logger.warning("Target column provided but no condition columns specified")
+
+        if self.target_col and self.data_type == 'smiles':
+            logger.info(
+                f"Data type is 'smiles'. The target column '{self.target_col}' will be ignored during deduplication.")
 
     def deduplicate(self, df: pd.DataFrame) -> pd.DataFrame:
         """Main deduplication method"""
@@ -50,6 +54,9 @@ class DataDeduplicator:
         group_keys = [self.smiles_col] + self.condition_cols
 
         grouped = df.groupby(group_keys, group_keys=False, sort=False)
+
+        if self.data_type == 'smiles':
+            return self._process_without_target(grouped)
 
         if self.target_col:
             return self._process_with_target(grouped, self._p_threshold)
@@ -68,7 +75,8 @@ class DataDeduplicator:
     def _process_without_target(self, grouped) -> pd.DataFrame:
         """Simple deduplication without target value"""
         logger.info("Performing simple deduplication by SMILES")
-        return grouped.first().reset_index()
+        deduplicated_df = grouped.first().reset_index()
+        return deduplicated_df.assign(DeduplicateMethod='smiles_only')
 
     def _process_with_target(self, grouped, p_threshold: float) -> pd.DataFrame:
         """Complex deduplication with target value"""

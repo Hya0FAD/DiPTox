@@ -65,6 +65,52 @@ class ChemistryProcessor:
                         solvent_mols.append(mol)
         return solvent_mols
 
+    def _get_effective_salts(self) -> List[str]:
+        """Get the current list of effective salts after additions and removals."""
+        # Combine default and custom salts
+        seen_smarts = set()
+        combined_unique_mols = []
+
+        for mol in self.remover.salts:
+            smarts = Chem.MolToSmarts(mol)
+            if smarts not in seen_smarts:
+                seen_smarts.add(smarts)
+                combined_unique_mols.append(mol)
+
+        for mol in self._custom_salts:
+            smarts = Chem.MolToSmarts(mol)
+            if smarts not in seen_smarts:
+                seen_smarts.add(smarts)
+                combined_unique_mols.append(mol)
+
+        removed_smarts = {Chem.MolToSmarts(m) for m in self._removed_salts}
+        effective = [mol for mol in combined_unique_mols if Chem.MolToSmarts(mol) not in removed_smarts]
+
+        return effective
+
+    def _get_effective_solvents(self):
+        """Get the current list of effective solvents after additions and removals."""
+        seen_smiles = set()
+        combined_unique_mols = []
+
+        for mol in self._solvents:
+            smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+            if smiles not in seen_smiles:
+                seen_smiles.add(smiles)
+                combined_unique_mols.append(mol)
+
+        for mol in self._custom_solvents:
+            smiles = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+            if smiles not in seen_smiles:
+                seen_smiles.add(smiles)
+                combined_unique_mols.append(mol)
+
+        removed_smiles = {Chem.MolToSmiles(m, isomericSmiles=True, canonical=True) for m in self._removed_solvents}
+        effective = [mol for mol in combined_unique_mols if
+                     Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True) not in removed_smiles]
+
+        return effective
+
     def add_neutralization_rule(self, reactant: str, product: str):
         """
         Add a new neutralization rule to the list, ensuring the rule is valid and there are no conflicts.
@@ -200,6 +246,8 @@ class ChemistryProcessor:
         Convert a SMILES string to a molecular object.
         :param sanitize: Whether to perform chemical validation.
         """
+        if smiles is None:
+            return None
         with redirect_stderr(io.StringIO()):
             mol = Chem.MolFromSmiles(str(smiles), sanitize=sanitize)
         if mol is None:
@@ -239,11 +287,11 @@ class ChemistryProcessor:
 
     def remove_salts(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
         """Remove salts."""
-        combined = [mol for mol in self.remover.salts + self._custom_salts]
-        combined = [mol for mol in combined
-                    if not any(mol.HasSubstructMatch(removed) and removed.HasSubstructMatch(mol)
-                               for removed in self._removed_salts)]
-        self.remover.salts = combined
+        self.remover.salts = self._get_effective_salts()
+
+        if mol.GetNumAtoms() >= 2 and len(Chem.GetMolFrags(mol)) == 1:
+            return mol
+
         stripped = self.remover.StripMol(mol)
         if stripped.GetNumAtoms() == 0:
             return None
@@ -266,11 +314,8 @@ class ChemistryProcessor:
 
     def remove_solvents(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
         """Remove solvents."""
-        combined = [mol for mol in self._solvents + self._custom_solvents]
-        combined = [mol for mol in combined
-                    if not any(mol.HasSubstructMatch(removed) and removed.HasSubstructMatch(mol)
-                               for removed in self._removed_solvents)]
-        self._solvents = combined
+        self._solvents = self._get_effective_solvents()
+
         fragments = Chem.GetMolFrags(mol, asMols=True)
         if len(fragments) == 1:
             return mol
@@ -335,7 +380,9 @@ class ChemistryProcessor:
             '[N-]=C=O',
             '[S-]C#N',
             '[O-]C#N',
-            '[C]'
+            '[C]',
+            'ICI',
+            'CN'
         ]
         for pattern in inorganic_patterns:
             q = Chem.MolFromSmarts(pattern)
@@ -362,6 +409,74 @@ class ChemistryProcessor:
         except Exception as e:
             logger.exception("Atom validation failed")
             return None
+
+    def display_current_rules(self) -> None:
+        """Prints a summary of the currently active chemical processing rules."""
+        print("--- Current Chemical Processing Rules ---")
+
+        # Valid Atoms
+        print("\n[+] Valid Atoms:")
+        print(f"    {', '.join(sorted(list(self._valid)))}")
+
+        # Neutralization Rules
+        print("\n[+] Neutralization Rules (Reactant SMARTS -> Product SMILES):")
+        for reactant, product in self._neutralization_rules:
+            print(f"    - {reactant} -> {product}")
+
+        # Salts
+        salts = self._get_effective_salts()
+        print(f"\n[+] Effective Salts ({len(salts)} total):")
+        for salt_mol in salts:
+            print(f"    - {Chem.MolToSmarts(salt_mol)}")
+
+        # Solvents
+        solvents = self._get_effective_solvents()
+        print(f"\n[+] Effective Solvents ({len(solvents)} total):")
+        for solvent_mol in solvents:
+            print(f"    - {Chem.MolToSmiles(solvent_mol)}")
+
+        print("\n--- End of Rules ---")
+
+    @staticmethod
+    def validate_atom_count(mol: Optional[Chem.Mol],
+                            min_heavy_atoms: Optional[int] = None,
+                            max_heavy_atoms: Optional[int] = None,
+                            min_total_atoms: Optional[int] = None,
+                            max_total_atoms: Optional[int] = None) -> bool:
+        """
+        Check if a molecule is within the specified atom count limits.
+        :param mol: The RDKit molecule object to check.
+        :param min_heavy_atoms: Minimum number of heavy atoms (inclusive).
+        :param max_heavy_atoms: Maximum number of heavy atoms (inclusive).
+        :param min_total_atoms: Minimum number of total atoms (inclusive).
+        :param max_total_atoms: Maximum number of total atoms (inclusive).
+        :return: True if the molecule meets all criteria, False otherwise.
+        """
+        if mol is None:
+            return False
+
+        if min_heavy_atoms is not None and mol.GetNumHeavyAtoms() < min_heavy_atoms:
+            return False
+
+        if max_heavy_atoms is not None and mol.GetNumHeavyAtoms() > max_heavy_atoms:
+            return False
+
+        if min_total_atoms is not None or max_total_atoms is not None:
+            try:
+                mol.UpdatePropertyCache(strict=False)
+
+                mol_with_hs = Chem.AddHs(mol)
+                total_atoms = mol_with_hs.GetNumAtoms()
+
+                if min_total_atoms is not None and total_atoms < min_total_atoms:
+                    return False
+
+                if max_total_atoms is not None and total_atoms > max_total_atoms:
+                    return False
+            except Exception:
+                return False
+
+        return True
 
     @classmethod
     def create_pipeline(cls, *processors: Callable[[Chem.Mol], Chem.Mol]):

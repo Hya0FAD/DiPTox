@@ -9,6 +9,8 @@ from .web_request import WebService
 from .data_io import DataHandler
 from .data_deduplicator import DataDeduplicator
 from .substructure_search import SubstructureSearcher
+from .logger import log_manager
+logger = log_manager.get_logger(__name__)
 
 
 def check_data_loaded(func):
@@ -306,6 +308,44 @@ class MolecularProcessor:
             self.df[column_map[prop]] = [r.get(prop, None) for r in results]
 
     @check_data_loaded
+    def filter_by_atom_count(self,
+                             min_heavy_atoms: Optional[int] = None,
+                             max_heavy_atoms: Optional[int] = None,
+                             min_total_atoms: Optional[int] = None,
+                             max_total_atoms: Optional[int] = None) -> None:
+        """
+        Filter molecules based on heavy or total atom counts.
+        :param min_heavy_atoms: Minimum number of heavy atoms (inclusive).
+        :param max_heavy_atoms: Maximum number of heavy atoms (inclusive).
+        :param min_total_atoms: Minimum number of total atoms (inclusive).
+        :param max_total_atoms: Maximum number of total atoms (inclusive).
+        """
+        if all(arg is None for arg in [min_heavy_atoms, max_heavy_atoms, min_total_atoms, max_total_atoms]):
+            logger.warning("No filter criteria provided for filter_by_atom_count. No action taken.")
+            return
+
+        initial_count = len(self.df)
+        smiles_col = 'Canonical smiles' if self._preprocess_key else self.smiles_col
+
+        def is_valid_by_atom_count(s):
+            mol = self.chem_processor.smiles_to_mol(s, sanitize=False)  # Use internal method
+            return self.chem_processor.validate_atom_count(
+                mol,
+                min_heavy_atoms,
+                max_heavy_atoms,
+                min_total_atoms,
+                max_total_atoms
+            )
+
+        # Build the filter mask
+        mask = self.df[smiles_col].apply(is_valid_by_atom_count)
+
+        self.df = self.df[mask].reset_index(drop=True)
+        final_count = len(self.df)
+        logger.info(
+            f"Filtered by atom count. Initial: {initial_count}, Final: {final_count}, Removed: {initial_count - final_count}")
+
+    @check_data_loaded
     def save_results(self, output_path: str, columns: Optional[List[str]] = None) -> None:
         """
         Save the processed results to a file.
@@ -357,3 +397,10 @@ class MolecularProcessor:
                 self.chem_processor.add_default_solvents(solvent)
             else:
                 self.chem_processor.remove_default_solvents(solvent)
+
+    def display_processing_rules(self) -> None:
+        """
+        Displays the current chemical processing rules being used,
+        including valid atoms, neutralization rules, salts, and solvents.
+        """
+        self.chem_processor.display_current_rules()
