@@ -2,7 +2,7 @@
 # pip install -i https://test.pypi.org/simple/ molppc
 # 要求：python>=3.8, rdkit>=2023.3, requests, tqdm, scipy, openpyxl,
 # 非必须库：pubchempy, ctx-python, chemspipy
-# 目前最新版：0.11.3
+# 目前最新版：0.12.1
 
 # 调用1：文件处理全流程
 from molppc import MolecularProcessor
@@ -48,7 +48,9 @@ smiles = [
     'C1=CC(=C2C(=C1)OC(O2)(F)F)C3=CNC=C3C#N',
     'C#C',
     'OC(C(O)C(=O)O)C(=O)O.CCC',
-    'CO'
+    'CO',
+    'O=C1CN(/N=C/c2ccc([N+](=O)[O-])o2)C(=O)N1',
+    '[H][C@]12O/C=C\[C@@]1([H])C5=C(O2)C=C(OC)C4=C5OC=3C=CC=C(O)C=3C4=O'
 ]
 b.load_data(input_data=smiles, smiles_col='SMILES')
 b.remove_neutralization_rule('[$([N-]C=O)]')  # 删除中和规则
@@ -57,7 +59,7 @@ b.manage_atom_rules(atoms=['Si', 'Zr'], add=True)  # 添加/删除原子识别
 b.manage_default_salt(salts=['II', '[Hg+2]', '[Ba+2]'], add=True)  # 添加/删除脱盐的盐类
 b.manage_default_solvent(solvents='CCC', add=True)
 b.display_processing_rules()
-b.preprocess(remove_solvents=True, neutralize=True, remove_inorganic=True, remove_mixtures=False, check_valid_atoms=False, remove_stereo=False, keep_largest_fragment=False)
+b.preprocess(remove_salts=True, remove_solvents=True, remove_inorganic=False, hac_threshold=3, remove_mixtures=True, check_valid_atoms=False, remove_stereo=False, keep_largest_fragment=True)
 # remove_salts: 是否脱盐，默认为True
 # remove_solvents: 是否除溶剂，默认为True
 # remove_mixtures: 是否除混合物，默认为False
@@ -66,15 +68,17 @@ b.preprocess(remove_solvents=True, neutralize=True, remove_inorganic=True, remov
 # remove_inorganic: 是否去除无机物，默认为True
 # neutralize: 是否中性化，默认为True
 # check_valid_atoms: 是否检查有效原子，默认为False
+# strict_atom_check: 严格检查模式，默认为False，即如果原子在主链则去除分子，在支链则去除原子
 # remove_stereo: 是否去除立体化学，默认为False
+# remove_isotopes: 是否去除同位素，默认为True
 # remove_hs: 是否去除显式氢，默认为True
 b.filter_by_atom_count(min_total_atoms=4)
 b.config_deduplicator()  # 不写配置是SMILES去重
 b.data_deduplicate()
 b.substructure_search(query_pattern='[C@@H]', is_smarts=True)  # 子结构判断
-# b.config_web_request(source='comptox/cactus/pubchem', comptox_api_key='your_key', max_workers=4)
-# b.web_request(send='smiles', request=['cas', 'iupac'])
-# b.save_results('FileName.xlsx')
+b.config_web_request(source='comptox/cactus/pubchem', comptox_api_key='your_key', max_workers=4)
+b.web_request(send='smiles', request=['cas', 'iupac'])
+b.save_results('FileName.csv')
 print(b.df['Canonical smiles'])
 print(len(b.chem_processor.remover.salts))
 
