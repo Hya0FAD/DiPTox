@@ -97,6 +97,12 @@ class DataDeduplicator:
             if not processed_group.empty:
                 processed.append(processed_group)
 
+        if not processed:
+            original_columns = list(grouped.obj.columns)
+            new_columns = [self.target_col + '_new', 'DeduplicateMethod']
+            final_columns = original_columns + new_columns
+            return pd.DataFrame(columns=final_columns)
+
         return pd.concat(processed).reset_index(drop=True)
 
     def _handle_discrete(self, group: pd.DataFrame) -> pd.DataFrame:

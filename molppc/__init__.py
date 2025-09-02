@@ -15,4 +15,4 @@ __all__ = ["MolecularProcessor",
            "LogManager",
            "SubstructureSearcher"
            ]
-__version__ = "0.12.0"
+__version__ = "0.12.1"

@@ -59,9 +59,16 @@ class MolecularProcessor:
         :param id_col: The column name for SMI file's SMILES ID (optional)
         :param sep: CSV file delimiter.
         """
-        self.df = self.data_handler.load_data(input_data, smiles_col, cas_col, target_col, inchikey_col, id_col, **kwargs).assign(
-            **{'Canonical smiles': None, 'IsValid': False, 'ProcessingComments': ''}
-        )
+        df = self.data_handler.load_data(input_data, smiles_col, cas_col, target_col, inchikey_col, id_col, **kwargs)
+        processing_cols = {
+            'Canonical smiles': None,
+            'IsValid': False,
+            'ProcessingComments': ''
+        }
+        cols_to_add = {k: v for k, v in processing_cols.items() if k not in df.columns}
+        if cols_to_add:
+            df = df.assign(**cols_to_add)
+        self.df = df
         self.smiles_col = smiles_col
         self.cas_col = cas_col
         self.target_col = target_col
@@ -75,7 +82,9 @@ class MolecularProcessor:
                    remove_inorganic: bool = True,
                    neutralize: bool = True,
                    check_valid_atoms: bool = False,
+                   strict_atom_check: bool = False,
                    remove_stereo: bool = False,
+                   remove_isotopes: bool = True,
                    remove_hs: bool = True,
                    keep_largest_fragment: bool = True,
                    hac_threshold: int = 3,
@@ -88,7 +97,10 @@ class MolecularProcessor:
         :param remove_inorganic: Whether to remove inorganic molecules.
         :param neutralize: Whether to neutralize charges.
         :param check_valid_atoms: Whether to check for valid atoms.
+        :param strict_atom_check: If True, remove the entire molecule if invalid atoms are found.
+                                  If False, attempt to remove only the invalid atoms if they are not on the main chain.
         :param remove_stereo: Whether to remove stereochemistry.
+        :param remove_isotopes: Whether to remove isotope information. Defaults to True.
         :param remove_hs: Whether to remove hydrogen atoms.
         :param keep_largest_fragment: Whether to keep the largest fragment.
         :param hac_threshold: Threshold for salt removal (heavy atoms count).
@@ -99,13 +111,13 @@ class MolecularProcessor:
         steps: List[Callable[[Chem.Mol], Optional[Chem.Mol]]] = []
         step_descriptions: List[str] = []
 
-        if remove_hs:
-            steps.append(self.chem_processor.remove_hydrogens)
-            step_descriptions.append("Hydrogen removal")
-
         if remove_stereo:
             steps.append(self.chem_processor.remove_stereochemistry)
             step_descriptions.append("Stereo removal")
+
+        if remove_isotopes:
+            steps.append(self.chem_processor.remove_isotopes)
+            step_descriptions.append("Isotope removal")
 
         if remove_salts:
             salt_processor = partial(self.chem_processor.remove_salts)
@@ -135,8 +147,13 @@ class MolecularProcessor:
             step_descriptions.append("Charge neutralization")
 
         if check_valid_atoms:
-            steps.append(self.chem_processor.effective_atom)
+            atom_validator = partial(self.chem_processor.effective_atom, strict=strict_atom_check)
+            steps.append(atom_validator)
             step_descriptions.append("Atom validation")
+
+        if remove_hs:
+            steps.append(self.chem_processor.remove_hydrogens)
+            step_descriptions.append("Hydrogen removal")
 
         # Process each molecule
         for idx, row in tqdm(self.df.iterrows(), total=len(self.df), desc="Processing"):
@@ -167,7 +184,7 @@ class MolecularProcessor:
             # Results handling
             if mol is not None:
                 try:
-                    std_smiles = self.chem_processor.standardize_smiles(mol, isomeric=(not remove_stereo))
+                    std_smiles = self.chem_processor.standardize_smiles(mol)
                     self._update_row(idx, True, "; ".join(comments) if comments else "Success", std_smiles)
                 except Exception as e:
                     self._update_row(idx, False, f"Standardization failed: {str(e)}", None)

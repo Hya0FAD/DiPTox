@@ -36,6 +36,10 @@ class ChemistryProcessor:
             ('[n-]', '[nH]'),
             ('[$([S-]=O)]', 'S'),
             ('[$([N-]C=O)]', 'N'),
+            ('[$([N-;X2]C#N)]', 'N'),
+            # ('[$([N-]=[N+]=N)]', 'N'),
+            ('[c-H1]', '[CH2]'),
+            ('[$([O-][N]C=O)]', 'O')
         ]
 
     def _default_salts(self):
@@ -255,15 +259,23 @@ class ChemistryProcessor:
         return mol
 
     @staticmethod
-    def standardize_smiles(mol: Chem.Mol,
-                           isomeric: bool = True,
-                           canonical: bool = True) -> Optional[str]:
+    def standardize_smiles(mol: Chem.Mol, canonical: bool = True) -> Optional[str]:
         """
         Generate standardized SMILES.
-        :param isomeric: Whether to retain stereochemistry.
         :param canonical: Whether to generate canonical form.
         """
-        return Chem.MolToSmiles(mol, isomericSmiles=isomeric, canonical=canonical)
+        return Chem.MolToSmiles(mol, canonical=canonical)
+
+    @staticmethod
+    def remove_isotopes(mol: Chem.Mol) -> Chem.Mol:
+        """
+        Remove isotope information from all atoms in a molecule.
+        This sets the isotope property of each atom to 0.
+        """
+        for atom in mol.GetAtoms():
+            if atom.GetIsotope():
+                atom.SetIsotope(0)
+        return mol
 
     @staticmethod
     def remove_stereochemistry(mol: Chem.Mol) -> Chem.Mol:
@@ -283,6 +295,7 @@ class ChemistryProcessor:
             repl = Chem.MolFromSmiles(product, False)
             while mol.HasSubstructMatch(patt):
                 mol = Chem.ReplaceSubstructs(mol, patt, repl)[0]
+        Chem.SanitizeMol(mol)
         return mol
 
     def remove_salts(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
@@ -391,24 +404,69 @@ class ChemistryProcessor:
 
         return mol
 
-    def effective_atom(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
+    def effective_atom(self, mol: Chem.Mol, strict: bool = False) -> Optional[Chem.Mol]:
         """
         Check if all atoms in the molecule are valid according to the list of valid atoms.
         :param mol: The molecular object to check.
+        :param strict: If True, reject the entire molecule if any invalid atoms are found.
+                       If False, attempt to remove only terminal invalid atoms.
         """
-        try:
-            elements = [atom.GetSymbol() for atom in mol.GetAtoms()]
-            if all(atom in self._valid for atom in elements):
-                return mol
-            else:
-                invalid_atoms = set(elements) - self._valid
-                logger.error(
-                    f"Invalid atoms detected: {invalid_atoms} "
-                    f"in molecule {Chem.MolToSmiles(mol)}"
-                )
-        except Exception as e:
-            logger.exception("Atom validation failed")
+        invalid_elements = {atom.GetSymbol() for atom in mol.GetAtoms()} - self._valid
+        if not invalid_elements:
+            return mol
+        original_smiles = Chem.MolToSmiles(mol)
+        if strict:
+            logger.error(
+                f"Strict check: Invalid atoms {invalid_elements} detected in molecule {original_smiles}. Molecule removed."
+            )
             return None
+
+        rw_mol = Chem.RWMol(mol)
+        atoms_to_remove_indices = []
+
+        for atom in rw_mol.GetAtoms():
+            if atom.GetSymbol() in invalid_elements:
+                if atom.GetDegree() > 1:
+                    logger.warning(
+                        f"Cannot remove non-terminal invalid atom '{atom.GetSymbol()}' from {original_smiles}. Molecule rejected."
+                    )
+                    return None
+                atoms_to_remove_indices.append(atom.GetIdx())
+
+        for idx in sorted(atoms_to_remove_indices, reverse=True):
+            rw_mol.RemoveAtom(idx)
+
+        if rw_mol.GetNumAtoms() == 0:
+            logger.warning(f"Molecule {original_smiles} became empty after removing invalid atoms. Molecule rejected.")
+            return None
+
+        try:
+            cleaned_mol = rw_mol.GetMol()
+            Chem.SanitizeMol(cleaned_mol)
+            logger.info(
+                f"Removed invalid atoms {invalid_elements} from {original_smiles}, "
+                f"resulting in {Chem.MolToSmiles(cleaned_mol)}."
+            )
+            return cleaned_mol
+        except Exception as e:
+            logger.error(
+                f"Sanitization failed for {original_smiles} after removing atoms: {e}. Molecule rejected."
+            )
+            return None
+
+        # try:
+        #     elements = [atom.GetSymbol() for atom in mol.GetAtoms()]
+        #     if all(atom in self._valid for atom in elements):
+        #         return mol
+        #     else:
+        #         invalid_atoms = set(elements) - self._valid
+        #         logger.error(
+        #             f"Invalid atoms detected: {invalid_atoms} "
+        #             f"in molecule {Chem.MolToSmiles(mol)}"
+        #         )
+        # except Exception as e:
+        #     logger.exception("Atom validation failed")
+        #     return None
 
     def display_current_rules(self) -> None:
         """Prints a summary of the currently active chemical processing rules."""
