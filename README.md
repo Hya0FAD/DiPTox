@@ -1,6 +1,6 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.0.0-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.0.0-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
@@ -23,7 +23,7 @@ A configurable pipeline to clean and normalize chemical structures in a specific
 -   **Filter by atom count** (heavy or total atoms)
 
 #### Data Deduplication
--   Flexible strategies for handling duplicate entries (`smiles_only`, `continuous`, `discrete` targets).
+-   Flexible strategies for handling duplicate entries (`smiles` or `continuous`/`discrete` targets).
 -   Customizable matching conditions and outlier handling methods (`auto`, `IQR`, `3sigma`).
 
 #### Identifier & Property Integration via Web Services
