@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diptox"
+version = "1.0.0"
+description = "Data Integration and Processing for Computational Toxicology"
+authors = [{name = "Guijia Bi", email = "gjbi@mail.dlut.edu.cn"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "requests",
+    "rdkit>=2023.3",
+    "tqdm",
+    "scipy",
+    "openpyxl"
+]
+
+[tool.setuptools]
+packages = ["diptox"]

@@ -1,0 +1,2 @@
+include molppc/*.smi
+include assets/*.png
