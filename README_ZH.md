@@ -40,7 +40,7 @@
 
 ## 安装
 ```bash
-pip install diptox
+pip install -i https://test.pypi.org/simple/ diptox
 ```
 
 ## 快速入门
