@@ -38,7 +38,7 @@ A configurable pipeline to clean and normalize chemical structures in a specific
 
 ## Installation
 ```bash
-pip install diptox
+pip install -i https://test.pypi.org/simple/ diptox
 ```
 
 ## Quick Start
