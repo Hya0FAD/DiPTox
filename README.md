@@ -24,11 +24,10 @@ A configurable pipeline to clean and normalize chemical structures in a specific
 
 #### Data Deduplication
 -   Flexible strategies for handling duplicate entries (`smiles` or `continuous`/`discrete` targets).
--   Customizable matching conditions and outlier handling methods (`auto`, `IQR`, `3sigma`).
+-   Customizable matching conditions (e.g., temperature, pressure) and deduplication methods (`auto`, `IQR`, `3sigma`, or custom functions).
 
 #### Identifier & Property Integration via Web Services
--   Query chemical properties from multiple online databases (**PubChem, ChemSpider, CompTox, Cactus**).
--   Fetch and validate identifiers like **CAS numbers, IUPAC names, InChIKeys, etc.**
+-   Fetch and interconvert chemical identifiers (**CAS, SMILES, IUPAC Name**) from multiple online databases (**PubChem, ChemSpider, CompTox, Cactus**).
 -   High-performance **concurrent requests** to accelerate data retrieval.
 -   Centralized API key management for services that require authentication.
 

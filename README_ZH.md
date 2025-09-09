@@ -1,4 +1,4 @@
-# DiPTox - 计算毒理学的数据整合与清洗
+# DiPTox - 计算毒理学数据整合与清洗
 
 ![PyPI Test Version](https://img.shields.io/badge/testpypi-1.0.0-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
 
@@ -25,12 +25,11 @@
 -   **按原子数量过滤**（重原子或总原子）
 
 #### 数据去重
--   为重复条目提供灵活的去重策略（`smiles`、`continuous`、`discrete` 目标值）。
--   可自定义的匹配条件和异常值处理方法（`auto`、`IQR`、`3sigma`）。
+-   为重复条目提供灵活的去重策略（基于 `smiles` 或基于 `continuous`/`discrete` 目标值）。
+-   可自定义的匹配条件（如温度、压强）和去重处理方法（`auto`、`IQR`、`3sigma` 或自定义方法）。
 
 #### 标识符与属性集成（通过Web服务）
--   从多个在线数据库（**PubChem、ChemSpider、CompTox、Cactus**）查询化学属性。
--   获取并验证 **CAS号、IUPAC名称、InChIKey** 等标识符。
+-   从多个在线数据库（**PubChem、ChemSpider、CompTox、Cactus**）获取并互相转换化学标识符（**CAS号、SMILES、IUPAC名称**）。
 -   通过高性能的**并发请求**加速数据获取。
 -   为需要身份验证的服务提供集中的 API 密钥管理。
 
@@ -76,7 +75,7 @@ DP.preprocess(
   remove_inorganic=True,      # 移除常见的无机分子。默认: True。
   neutralize=True,            # 中和分子上的电荷。默认: True。
   check_valid_atoms=False,    # 检查所有原子是否在有效列表中。默认: False。
-  strict_atom_check=False,    # 若为True，则丢弃含无效原子的分子；若为False，则尝试移除它们。默认: False。
+  strict_atom_check=False,    # 若为True，则丢弃含无效原子的分子；若为False，则尝试从支链移除它们。默认: False。
   remove_stereo=False,        # 移除立体化学信息 (如 @, / \)。默认: False。
   remove_isotopes=True,       # 移除同位素信息 (如 [13C])。默认: True。
   remove_hs=True              # 移除显式的氢原子。默认: True。
