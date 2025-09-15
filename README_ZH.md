@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.0.0-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.0.1-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">
@@ -21,6 +21,7 @@
 -   **移除显式氢**
 -   **移除立体化学信息**
 -   **移除同位素**
+-   **移除自由基**
 -   **将分子标准化**为规范的SMILES
 -   **按原子数量过滤**（重原子或总原子）
 
@@ -74,11 +75,13 @@ DP.preprocess(
   keep_largest_fragment=True, # 在混合物中保留最大的片段。默认: True。
   remove_inorganic=True,      # 移除常见的无机分子。默认: True。
   neutralize=True,            # 中和分子上的电荷。默认: True。
+  reject_non_neutral=False,   # 仅保留形式电荷为零的分子。默认：False。
   check_valid_atoms=False,    # 检查所有原子是否在有效列表中。默认: False。
   strict_atom_check=False,    # 若为True，则丢弃含无效原子的分子；若为False，则尝试从支链移除它们。默认: False。
   remove_stereo=False,        # 移除立体化学信息 (如 @, / \)。默认: False。
   remove_isotopes=True,       # 移除同位素信息 (如 [13C])。默认: True。
   remove_hs=True              # 移除显式的氢原子。默认: True。
+  reject_radical_species=True # 移除含有游离基原子的分子。默认：True。
 )
 
 # 配置去重

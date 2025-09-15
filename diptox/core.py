@@ -81,6 +81,7 @@ class DiptoxPipeline:
                    remove_mixtures: bool = False,
                    remove_inorganic: bool = True,
                    neutralize: bool = True,
+                   reject_non_neutral: bool = False,
                    check_valid_atoms: bool = False,
                    strict_atom_check: bool = False,
                    remove_stereo: bool = False,
@@ -88,7 +89,8 @@ class DiptoxPipeline:
                    remove_hs: bool = True,
                    keep_largest_fragment: bool = True,
                    hac_threshold: int = 3,
-                   sanitize: bool = True) -> pd.DataFrame:
+                   sanitize: bool = True,
+                   reject_radical_species: bool = True) -> pd.DataFrame:
         """
         Execute the chemical processing pipeline.\
         :param remove_salts: Whether to remove salts.
@@ -96,6 +98,7 @@ class DiptoxPipeline:
         :param remove_mixtures: Whether to remove mixtures.
         :param remove_inorganic: Whether to remove inorganic molecules.
         :param neutralize: Whether to neutralize charges.
+        :param reject_non_neutral: Only retain the molecules whose formal charge is zero.
         :param check_valid_atoms: Whether to check for valid atoms.
         :param strict_atom_check: If True, remove the entire molecule if invalid atoms are found.
                                   If False, attempt to remove only the invalid atoms if they are not on the main chain.
@@ -105,6 +108,7 @@ class DiptoxPipeline:
         :param keep_largest_fragment: Whether to keep the largest fragment.
         :param hac_threshold: Threshold for salt removal (heavy atoms count).
         :param sanitize: Whether to perform chemical sanitization.
+        :param reject_radical_species: Molecules containing free radical atoms are directly rejected.
         :return: Processed DataFrame with results.
         """
         # Build processing steps
@@ -118,6 +122,10 @@ class DiptoxPipeline:
         if remove_isotopes:
             steps.append(self.chem_processor.remove_isotopes)
             step_descriptions.append("Isotope removal")
+
+        if remove_hs:
+            steps.append(self.chem_processor.remove_hydrogens)
+            step_descriptions.append("Hydrogen removal")
 
         if remove_salts:
             salt_processor = partial(self.chem_processor.remove_salts)
@@ -142,18 +150,25 @@ class DiptoxPipeline:
             steps.append(self.chem_processor.remove_inorganic)
             step_descriptions.append("Inorganic removal")
 
+        if reject_radical_species:
+            steps.append(self.chem_processor.reject_radicals)
+            step_descriptions.append("Radical check")
+
         if neutralize:
-            steps.append(self.chem_processor.neutralize_charges)
-            step_descriptions.append("Charge neutralization")
+            charge_processor = partial(
+                self.chem_processor.neutralize_charges,
+                reject_non_neutral=reject_non_neutral
+            )
+            steps.append(charge_processor)
+            description = "Charge neutralization"
+            if reject_non_neutral:
+                description += " and Non-neutral rejection"
+            step_descriptions.append(description)
 
         if check_valid_atoms:
             atom_validator = partial(self.chem_processor.effective_atom, strict=strict_atom_check)
             steps.append(atom_validator)
             step_descriptions.append("Atom validation")
-
-        if remove_hs:
-            steps.append(self.chem_processor.remove_hydrogens)
-            step_descriptions.append("Hydrogen removal")
 
         # Process each molecule
         for idx, row in tqdm(self.df.iterrows(), total=len(self.df), desc="Processing"):

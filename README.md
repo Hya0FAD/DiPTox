@@ -1,6 +1,6 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.0.0-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.0.1-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
@@ -19,6 +19,7 @@ A configurable pipeline to clean and normalize chemical structures in a specific
 -   **Remove explicit hydrogens**
 -   **Remove stereochemistry**
 -   **Remove isotopes**
+-   **Handle Radical**
 -   **Standardize molecules** to canonical SMILES
 -   **Filter by atom count** (heavy or total atoms)
 
@@ -67,16 +68,18 @@ DP.display_processing_rules()
 DP.preprocess(
   remove_salts=True,          # Remove salt fragments. Default: True.
   remove_solvents=True,       # Remove solvent fragments. Default: True.
-  remove_mixtures=False,      # Handle mixtures based on fragment size. Default: False.
+  remove_mixtures=True,       # Handle mixtures based on fragment size. Default: False.
   hac_threshold=3,            # Heavy atom count threshold for fragment removal. Default: 3.
   keep_largest_fragment=True, # Keep the largest fragment in a mixture. Default: True.
-  remove_inorganic=True,      # Remove common inorganic molecules. Default: True.
+  remove_inorganic=False,     # Remove common inorganic molecules. Default: True.
   neutralize=True,            # Neutralize charges on the molecule. Default: True.
-  check_valid_atoms=False,    # Check if all atoms are in the valid list. Default: False.
+  reject_non_neutral=False,   # Only retain the molecules whose formal charge is zero. Default: False.
+  check_valid_atoms=True,     # Check if all atoms are in the valid list. Default: False.
   strict_atom_check=False,    # If True, discard molecules with invalid atoms. If False, try to remove them. Default: False.
-  remove_stereo=False,        # Remove stereochemistry information (e.g., @, / \). Default: False.
-  remove_isotopes=True,       # Remove isotopic information (e.g., [13C]). Default: True.
-  remove_hs=True              # Remove explicit hydrogen atoms. Default: True.
+  remove_stereo=False,        # Remove stereochemistry information. Default: False.
+  remove_isotopes=True,       # Remove isotopic information. Default: True.
+  remove_hs=True,             # Remove explicit hydrogen atoms. Default: True.
+  reject_radical_species=True # Molecules containing free radical atoms are directly rejected. Default: True.
 )
 
 # Configure deduplication

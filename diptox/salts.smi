@@ -9,9 +9,13 @@ oxalic acid	O=C(O)C(=O)O
 isethionic acid	O=S(=O)(O)CCO
 maleic acid	O=C(O)/C=C\C(=O)O
 fumaric acid	O=C(O)/C=C/C(=O)O
+Trifluoroacetic acid	FC(F)(F)C(=O)O
+Dicyclohexylamine	C1CCCCC1NC1CCCCC1
 lithium	[Li+]
 sodium	[Na+]
 potassium	[K+]
+Calcium	[Ca+2]
+Magnesium	[Mg+2]
 hydrochloride	Cl
 hydrobromide	Br
 hydroiodide	I
@@ -20,3 +24,5 @@ hydrate (water)	O
 sulfuric acid	O=S(=O)(O)O
 phosphoric acid	O=P(O)(O)O
 nitric acid	O=[N+]([O-])O
+Hexafluorophosphate	[P-](F)(F)(F)(F)(F)F
+P-toluenesulfonate	c1cc(C)ccc1S(=O)(=O)O

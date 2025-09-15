@@ -98,14 +98,20 @@ b.preprocess(
     keep_largest_fragment=True, # Keep the largest fragment in a mixture. Default: True.
     remove_inorganic=False,     # Remove common inorganic molecules. Default: True.
     neutralize=True,            # Neutralize charges on the molecule. Default: True.
+    reject_non_neutral=False,   # Only retain the molecules whose formal charge is zero. Default: False.
     check_valid_atoms=True,     # Check if all atoms are in the valid list. Default: False.
     strict_atom_check=False,    # If True, discard molecules with invalid atoms. If False, try to remove them. Default: False.
     remove_stereo=False,        # Remove stereochemistry information. Default: False.
     remove_isotopes=True,       # Remove isotopic information. Default: True.
-    remove_hs=True              # Remove explicit hydrogen atoms. Default: True.
+    remove_hs=True,             # Remove explicit hydrogen atoms. Default: True.
+    reject_radical_species=True # Molecules containing free radical atoms are directly rejected. Default: True.
 )
 
 b.filter_by_atom_count(min_total_atoms=4)
+# min_heavy_atoms
+# max_heavy_atoms
+# min_total_atoms
+# max_total_atoms
 b.config_deduplicator()  # With no arguments, defaults to SMILES-only deduplication
 b.data_deduplicate()
 b.substructure_search(query_pattern='[C@@H]', is_smarts=True)  # Find substructures

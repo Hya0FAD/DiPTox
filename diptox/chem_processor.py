@@ -37,7 +37,6 @@ class ChemistryProcessor:
             ('[$([S-]=O)]', 'S'),
             ('[$([N-]C=O)]', 'N'),
             ('[$([N-;X2]C#N)]', 'N'),
-            # ('[$([N-]=[N+]=N)]', 'N'),
             ('[c-H1]', '[CH2]'),
             ('[$([O-][N]C=O)]', 'O')
         ]
@@ -278,6 +277,20 @@ class ChemistryProcessor:
         return mol
 
     @staticmethod
+    def reject_radicals(mol: Chem.Mol) -> Optional[Chem.Mol]:
+        """If the molecule contains free radical electrons, it will be rejected"""
+        if mol is None:
+            return None
+        for a in mol.GetAtoms():
+            if a.GetNumRadicalElectrons() > 0:
+                logger.warning(
+                    f"Radical detected on atom {a.GetIdx()} "
+                    f"({a.GetSymbol()}) in {Chem.MolToSmiles(mol)}. Molecule rejected."
+                )
+                return None
+        return mol
+
+    @staticmethod
     def remove_stereochemistry(mol: Chem.Mol) -> Chem.Mol:
         """Remove stereochemistry information"""
         Chem.RemoveStereochemistry(mol)
@@ -288,14 +301,20 @@ class ChemistryProcessor:
         """Remove hydrogen atoms"""
         return Chem.RemoveHs(mol)
 
-    def neutralize_charges(self, mol: Chem.Mol) -> Chem.Mol:
-        """Charge neutralization processing"""
+    def neutralize_charges(self, mol: Chem.Mol, reject_non_neutral: bool = False) -> Optional[Chem.Mol]:
+        """Charge neutralization processing and optionally reject non-neutral molecules."""
         for reactant, product in self._neutralization_rules:
             patt = Chem.MolFromSmarts(reactant)
             repl = Chem.MolFromSmiles(product, False)
             while mol.HasSubstructMatch(patt):
                 mol = Chem.ReplaceSubstructs(mol, patt, repl)[0]
         Chem.SanitizeMol(mol)
+
+        if reject_non_neutral:
+            charge = rdmolops.GetFormalCharge(mol)
+            if charge != 0:
+                logger.info(f"Non-neutral molecule ({charge}) {Chem.MolToSmiles(mol)} rejected.")
+                return None
         return mol
 
     def remove_salts(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
