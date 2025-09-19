@@ -13,6 +13,7 @@ class DataHandler:
     def load_data(input_data: Union[str, List[str], pd.DataFrame],
                   smiles_col: str = None,
                   cas_col: Optional[str] = None,
+                  name_col: Optional[str] = None,
                   target_col: Optional[str] = None,
                   inchikey_col: Optional[str] = None,
                   id_col: Optional[str] = None,
@@ -25,12 +26,13 @@ class DataHandler:
             - Pre-loaded DataFrame
         :param smiles_col: SMILES column name
         :param cas_col: The column name for CAS Numbers.
+        :param name_col: Name column name
         :param target_col: Target value column name (optional)
         :param inchikey_col: Inchikey column name (optional)
         :param id_col: SMI file's SMILES ID column name (optional)
         """
         if isinstance(input_data, str):
-            return DataHandler._load_from_file(input_data, smiles_col, cas_col, target_col, inchikey_col, id_col, **kwargs)
+            return DataHandler._load_from_file(input_data, smiles_col, cas_col, name_col, target_col, inchikey_col, id_col, **kwargs)
         elif isinstance(input_data, list):
             return DataHandler._load_from_list(input_data, smiles_col)
         elif isinstance(input_data, pd.DataFrame):
@@ -42,6 +44,7 @@ class DataHandler:
     def _load_from_file(file_path: str,
                         smiles_col: Optional[str] = None,
                         cas_col: Optional[str] = None,
+                        name_col: Optional[str] = None,
                         target_col: Optional[str] = None,
                         inchikey_col: Optional[str] = None,
                         id_col: Optional[str] = None,
@@ -100,6 +103,9 @@ class DataHandler:
             raise
         if target_col is not None and target_col not in df.columns:
             logger.error(f"The target value column '{target_col}' does not exist in the file")
+            raise
+        if name_col is not None and name_col not in df.columns:
+            logger.error(f"The name column '{name_col}' does not exist in the file")
             raise
 
         return df

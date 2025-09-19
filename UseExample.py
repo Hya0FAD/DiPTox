@@ -18,7 +18,7 @@
 # - ctx-python (for CompTox integration)
 # - chemspipy (for ChemSpider integration)
 
-# Latest Version: 1.0.0
+# Latest Version: 1.1.0 (2025.09.19)
 
 
 # ==============================================================================
@@ -39,8 +39,10 @@ a.config_deduplicator(data_type='discrete', # 'smiles', 'discrete' or 'continuou
                       method='vote', # 'auto', 'vote', '3sigma', 'IQR'
                       condition_cols=['pH','temperature']) # Example: provide a list of condition columns
 a.data_deduplicate()
-a.config_web_request(source='comptox', # 'comptox', 'cactus', 'pubchem'
+a.config_web_request(sources=['pubchem', 'cas', 'comptox', 'chemspider', 'cactus'],
                      comptox_api_key='your_key_here', 
+                     chemspider_api_key='your_key_here', 
+                     cas_api_key='your_key_here', 
                      max_workers=4)
 a.web_request(send='smiles', request=['cas', 'iupac'])
 a.save_results(r"path/to/your/Processed_FileName.csv") # Can save as .xlsx, .csv, .txt, .sdf, .smi
@@ -115,7 +117,7 @@ b.filter_by_atom_count(min_total_atoms=4)
 b.config_deduplicator()  # With no arguments, defaults to SMILES-only deduplication
 b.data_deduplicate()
 b.substructure_search(query_pattern='[C@@H]', is_smarts=True)  # Find substructures
-b.config_web_request(source='pubchem', max_workers=4)
+b.config_web_request(sources=['pubchem'], max_workers=4)
 b.web_request(send='smiles', request=['cas', 'iupac'])
 b.save_results('Processed_SMILES.csv')
 print(b.df['Canonical smiles'])
@@ -131,7 +133,7 @@ from diptox import DiptoxPipeline
 c = DiptoxPipeline()
 c.load_data(input_data="path/to/your/FileName.csv",
             cas_col='CAS_Number_Column', target_col='Value_Column')
-c.config_web_request(source='comptox', comptox_api_key='your_key_here', max_workers=4)
+c.config_web_request(sources=['comptox'], comptox_api_key='your_key_here', max_workers=4)
 c.web_request(send='cas', request=['smiles', 'iupac'])
 c.preprocess()
 c.substructure_search(query_pattern='C(=O)O', is_smarts=True)  # Match fragments
@@ -177,7 +179,7 @@ e.load_data(input_data=r"path/to/your/zinc_database.smi",
 e.preprocess()
 e.config_deduplicator(data_type='discrete')
 e.data_deduplicate()
-e.config_web_request(source='pubchem', max_workers=4)
+e.config_web_request(sources=['pubchem'], max_workers=4)
 e.web_request(send='smiles', request=['cas'])
 
 e.save_results(r"Processed_Molecules.sdf")

@@ -4,6 +4,7 @@ from typing import Optional, List, Union, Tuple, Callable, Dict
 from functools import partial, wraps
 from tqdm import tqdm
 from rdkit import Chem
+import requests
 from .chem_processor import ChemistryProcessor
 from .web_request import WebService
 from .data_io import DataHandler
@@ -32,6 +33,7 @@ class DiptoxPipeline:
         self.df: Optional[pd.DataFrame] = None
         self.smiles_col: str = "Smiles"
         self.cas_col: Optional[str] = None
+        self.name_col: Optional[str] = None
         self.target_col: Optional[str] = None
         self.inchikey_col = None
         self.id_col: Optional[str] = None
@@ -45,6 +47,7 @@ class DiptoxPipeline:
                   input_data: Union[str, List[str], pd.DataFrame],
                   smiles_col: str = None,
                   cas_col: Optional[str] = None,
+                  name_col: Optional[str] = None,
                   target_col: Optional[str] = None,
                   inchikey_col: Optional[str] = None,
                   id_col: Optional[str] = None,
@@ -54,6 +57,7 @@ class DiptoxPipeline:
         :param input_data: Path to input data (.xlsx/.xls/.csv/.txt/.sdf/.smi), or a list, or a DataFrame.
         :param smiles_col: The column name containing SMILES strings.
         :param cas_col: The column name for CAS Numbers.
+        :param name_col: The column name for names.
         :param target_col: The column name for target values (optional).
         :param inchikey_col: The column name for InChIKeys (optional).
         :param id_col: The column name for SMI file's SMILES ID (optional)
@@ -269,18 +273,20 @@ class DiptoxPipeline:
             for idx, _ in results['matches']:
                 self.df.at[idx, f'Substructure_{query_pattern}'] = True
 
-    def config_web_request(self, source: str = 'pubchem',
+    def config_web_request(self, sources: Union[str, List[str]] = 'pubchem',
                            interval: int = 0.3,
                            retries: int = 3,
                            delay: int = 30,
-                           max_workers: int = 4,
+                           max_workers: int = 1,
                            batch_limit: int = 1500,
                            rest_duration: int = 300,
                            chemspider_api_key: Optional[str] = None,
-                           comptox_api_key: Optional[str] = None) -> None:
+                           comptox_api_key: Optional[str] = None,
+                           cas_api_key: Optional[str] = None,
+                           force_api_mode: bool = False) -> None:
         """
         Initializes the WebService class
-        :param source: Data source interface
+        :param sources: Data source interface
         :param interval: Time interval in seconds
         :param retries: Number of retry attempts on failure.
         :param delay: Delay between retries (in seconds).
@@ -289,55 +295,90 @@ class DiptoxPipeline:
         :param rest_duration: Duration of the break in seconds.
         :param chemspider_api_key: Chemspider API key.
         :param comptox_api_key: Comptox API key.
+        :param cas_api_key: CAS API key.
+        :param force_api_mode: Force API mode.
         """
-        self.web_source = source
-        self.web_service = WebService(source=source, interval=interval, retries=retries, delay=delay,
+        self.web_source = sources
+        self.web_service = WebService(sources=sources, interval=interval, retries=retries, delay=delay,
                                       max_workers=max_workers, batch_limit=batch_limit, rest_duration=rest_duration,
-                                      chemspider_api_key=chemspider_api_key, comptox_api_key=comptox_api_key)
+                                      chemspider_api_key=chemspider_api_key, comptox_api_key=comptox_api_key,
+                                      cas_api_key=cas_api_key,force_api_mode=force_api_mode)
 
     @check_data_loaded
-    def web_request(self, send: str, request: Union[str, List[str]]) -> None:
+    def web_request(self, send: Union[str, List[str]], request: Union[str, List[str]]) -> None:
         """
         Add CAS numbers for valid molecules.
         :param send: What is used to request additional data? (smiles/cas)
         :param request: What identifier is requested? (smiles/cas/iupac)
         """
-        send = send.strip().lower()
-        if send not in ['smiles', 'cas', 'inchikey']:
-            raise ValueError("Send must be 'smiles' or' cas' or 'inchikey'")
-        request = [request] if isinstance(request, str) else request
-        request = [prop.strip().lower() for prop in request]
-        valid_props = {'smiles', 'cas', 'iupac', 'inchikey'}
-        if invalid := set(request) - valid_props:
-            raise ValueError(f"Invalid request properties: {invalid}")
+        if self.web_service is None:
+            raise ValueError("The WebService has not been configured. Please call the config_web_request first.")
+        send_by_list = [send] if isinstance(send, str) else send
+        request_list = [request] if isinstance(request, str) else request
+        send_set = {prop.strip().lower() for prop in send_by_list}
+        request_set = {prop.strip().lower() for prop in request_list}
 
-        if send == 'cas':
-            input_col = self.cas_col
-            input_type = 'cas'
-        elif send == 'smiles':
-            input_col = 'Canonical smiles' if self._preprocess_key else self.smiles_col
-            input_type = 'smiles'
-        else:
-            input_col = self.inchikey_col
-            input_type = 'inchikey'
-        if input_col not in self.df.columns:
-            raise ValueError(f"Input column {input_col} not found in data.")
+        VALID_PROPERTIES = {'smiles', 'cas', 'iupac', 'mw', 'name'}
+        invalid_props = request_set - VALID_PROPERTIES
+        if invalid_props:
+            raise ValueError(f"Invalid request properties: {list(invalid_props)}")
 
-        results = self.web_service.get_properties(self.df[input_col].tolist(), request, input_type)
-        column_map = {
-            'cas': f"CAS Number_{self.web_source}",
-            'iupac': f"IUPAC Name_{self.web_source}",
-            'smiles': f"Smiles_{self.web_source}",
-            'inchikey': f"InchiKey_{self.web_source}"
-        }
-        if 'smiles' in request:
-            self.smiles_col, self._preprocess_key = column_map['smiles'], 0
-        if 'cas' in request:
-            self.cas_col = column_map['cas']
-        if 'inchikey' in request:
-            self.inchikey_col = column_map['inchikey']
-        for prop in request:
-            self.df[column_map[prop]] = [r.get(prop, None) for r in results]
+        col_map = {'cas': self.cas_col, 'name': self.name_col, 'smiles': self.smiles_col}
+        for prop in request_set:
+            self.df[f'{prop}_from_web'] = None
+        self.df['Query_Status'] = 'Pending'
+        self.df['Data_Source'] = None
+        self.df['Query_Method'] = None
+
+        pending_indices = list(self.df.index)
+
+        try:
+            for id_type in send_set:
+                if not pending_indices:
+                    break
+
+                input_col_name = col_map.get(id_type)
+                if not input_col_name or input_col_name not in self.df.columns:
+                    logger.warning(f"The specified column '{input_col_name}' (for '{id_type}') does not exist, so it will be skipped.")
+                    continue
+
+                identifiers_to_query = self.df.loc[pending_indices, input_col_name].tolist()
+
+                if id_type == 'cas':
+                    identifiers_to_query = [self.web_service._validate_and_clean_cas(cas) for cas in
+                                            identifiers_to_query]
+
+                results = self.web_service.get_properties_batch(identifiers_to_query, request_set, id_type)
+
+                processed_indices = []
+                for i, original_index in enumerate(pending_indices):
+                    res = results[i]
+                    if any(res.get(prop) for prop in request_set):
+                        for prop in request_set:
+                            col = f'{prop}_from_web'
+                            if res.get(prop) and pd.isna(self.df.at[original_index, col]):
+                                self.df.at[original_index, col] = res[prop]
+
+                        self.df.at[original_index, 'Data_Source'] = res.get('Data_Source')
+                        self.df.at[original_index, 'Query_Method'] = id_type
+                        self.df.at[original_index, 'Query_Status'] = 'Success'
+                        processed_indices.append(original_index)
+
+                pending_indices = [idx for idx in pending_indices if idx not in processed_indices]
+
+            if pending_indices:
+                self.df.loc[pending_indices, 'Query_Status'] = 'Failed'
+
+            logger.info("Web request processing is complete.")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"An error occurred on the network, and the web request was interrupted: {e}")
+            self.df.loc[pending_indices, 'Query_Status'] = 'Network Error'
+            return
+        except Exception as e:
+            logger.error(f"An unknown error occurred during the web request: {e}")
+            self.df.loc[pending_indices, 'Query_Status'] = 'Unknown Error'
+            raise
 
     @check_data_loaded
     def filter_by_atom_count(self,

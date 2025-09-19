@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.0.1-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.1.0-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">
@@ -30,7 +30,7 @@
 -   可自定义的匹配条件（如温度、压强）和去重处理方法（`auto`、`IQR`、`3sigma` 或自定义方法）。
 
 #### 标识符与属性集成（通过Web服务）
--   从多个在线数据库（**PubChem、ChemSpider、CompTox、Cactus**）获取并互相转换化学标识符（**CAS号、SMILES、IUPAC名称**）。
+-   从多个在线数据库（**PubChem、ChemSpider、CompTox、Cactus、CAS Common Chemistry**）获取并互相转换化学标识符（**CAS号、SMILES、IUPAC名称、常用名、分子量**）。
 -   通过高性能的**并发请求**加速数据获取。
 -   为需要身份验证的服务提供集中的 API 密钥管理。
 
@@ -89,7 +89,7 @@ DP.config_deduplicator(condition_cols, data_type, method, custom_method)
 DP.data_deduplicate()
 
 # 配置Web查询
-DP.config_web_request(source='pubchem/chemspider/comptox/cactus', max_workers, ...)
+DP.config_web_request(sources=['pubchem/chemspider/comptox/cactus/cas'], max_workers, ...)
 DP.web_request(send='cas', request=['smiles', 'iupac'])
 
 # 亚结构搜索
@@ -107,13 +107,15 @@ DiPTox 支持以下化学数据库：
 -   `ChemSpider`: https://www.chemspider.com/
 -   `CompTox`: https://comptox.epa.gov/dashboard/
 -   `Cactus`: https://cactus.nci.nih.gov/
+-   `CAS`: https://commonchemistry.cas.org/
 
-**注意**：`ChemSpider` 和 `CompTox` 需要 API 密钥。请在配置时提供：
+**注意**：`ChemSpider` 、 `CompTox` 和 `CAS` 需要 API 密钥。请在配置时提供：
 ```python
 DP.config_web_request(
     source='chemspider/comptox',
     chemspider_api_key='your_personal_key',
     comptox_api_key='your_personal_key'
+    cas_api_key='your_personal_key'
 )
 ```
 ## 环境要求
@@ -124,7 +126,7 @@ DP.config_web_request(
   - `tqdm`
   - `openpyxl`
   - `scipy`
-- **可选依赖** (根据需要安装):
+- **可选依赖** (根据需要安装，如不安装则使用`requests`发送请求):
   - `pubchempy>=1.0.4`: 用于 PubChem 集成
   - `chemspipy>=2.0.0`: 用于 ChemSpider 集成 (需要 API 密钥)
   - `ctx-python>=0.0.1a7`: 用于 CompTox Dashboard 集成 (需要 API 密钥)

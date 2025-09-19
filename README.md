@@ -1,6 +1,6 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.0.1-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.1.0-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
@@ -28,7 +28,7 @@ A configurable pipeline to clean and normalize chemical structures in a specific
 -   Customizable matching conditions (e.g., temperature, pressure) and deduplication methods (`auto`, `IQR`, `3sigma`, or custom functions).
 
 #### Identifier & Property Integration via Web Services
--   Fetch and interconvert chemical identifiers (**CAS, SMILES, IUPAC Name**) from multiple online databases (**PubChem, ChemSpider, CompTox, Cactus**).
+-   Fetch and interconvert chemical identifiers (**CAS, SMILES, IUPAC Name, Common Name, MW**) from multiple online databases (**PubChem, ChemSpider, CompTox, Cactus, CAS Common Chemistry**).
 -   High-performance **concurrent requests** to accelerate data retrieval.
 -   Centralized API key management for services that require authentication.
 
@@ -43,7 +43,7 @@ pip install -i https://test.pypi.org/simple/ diptox
 ```
 
 ## Quick Start
-```{python}
+```python
 from diptox import DiptoxPipeline
 
 # Initialize processor
@@ -87,7 +87,7 @@ DP.config_deduplicator(condition_cols, data_type, method, custom_method)
 DP.data_deduplicate()
 
 # Configure web queries
-DP.config_web_request(source='pubchem/chemspider/comptox/cactus', max_workers, ...)
+DP.config_web_request(sources=['pubchem/chemspider/comptox/cactus/cas'], max_workers, ...)
 DP.web_request(send='cas', request=['smiles', 'iupac'])
 
 # Substructure search
@@ -105,13 +105,15 @@ DiPTox supports the following chemical databases:
 -   `ChemSpider`: https://www.chemspider.com/
 -   `CompTox`: https://comptox.epa.gov/dashboard/
 -   `Cactus`: https://cactus.nci.nih.gov/
+-   `CAS`: https://commonchemistry.cas.org/
 
-**Note:** `ChemSpider` and `CompTox` require API keys. Provide them during configuration:
-```{python}
+**Note:** `ChemSpider`, `CompTox` and `CAS` require API keys. Provide them during configuration:
+```python
 DP.config_web_request(
-    source='chemspider/comptox',
+    sources=['chemspider/comptox/CAS'],
     chemspider_api_key='your_personal_key',
-    comptox_api_key='your_personal_key'
+    comptox_api_key='your_personal_key',
+    cas_api_key='your_personal_key'
 )
 ```
 ## Requirements
@@ -122,7 +124,7 @@ DP.config_web_request(
   - `tqdm`
   - `openpyxl`
   - `scipy`
-- Optional Dependencies (install as needed):
+- Optional Dependencies (install as needed, if not installed, then send the request using `requests`.):
   - `pubchempy>=1.0.4`: For PubChem integration
   - `chemspipy>=2.0.0`: For ChemSpider (requires API key)
   - `ctx-python>=0.0.1a7`: For CompTox Dashboard (requires API key)
