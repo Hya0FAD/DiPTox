@@ -15,4 +15,4 @@ __all__ = ["DiptoxPipeline",
            "LogManager",
            "SubstructureSearcher"
            ]
-__version__ = "1.1.0"
+__version__ = "1.2.0"

@@ -1,12 +1,20 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.1.0-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.2.0-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
 **DiPTox** is a Python toolkit designed for the robust preprocessing, standardization, and multi-source data integration of molecular datasets, with a focus on computational toxicology workflows.
 
+## New in v1.2: Interactive GUI
+DiPTox now includes a user-friendly **Graphical User Interface (GUI)** powered by Streamlit. This allows users to perform data loading, preprocessing, web retrieval, and deduplication through a visual web interface without writing any code.
+
 ## Core Features
+
+#### Graphical User Interface (GUI)
+-   **Visual Operation**: Complete workflow control via a web browser.
+-   **Real-time Preview**: Instantly view data changes after applying rules.
+-   **Rule Management**: Add/Remove valid atoms, salts, and solvents interactively.
 
 #### Chemical Preprocessing & Standardization
 A configurable pipeline to clean and normalize chemical structures in a specific, controlled order:
@@ -41,6 +49,15 @@ A configurable pipeline to clean and normalize chemical structures in a specific
 ```bash
 pip install -i https://test.pypi.org/simple/ diptox
 ```
+
+## GUI
+After installation, you can launch the graphical interface directly from your terminal:
+
+```bash
+diptox-gui
+```
+
+This command will automatically open the DiPTox interface in your default web browser.
 
 ## Quick Start
 ```python
@@ -83,7 +100,7 @@ DP.preprocess(
 )
 
 # Configure deduplication
-DP.config_deduplicator(condition_cols, data_type, method, custom_method)
+DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority)
 DP.data_deduplicate()
 
 # Configure web queries
@@ -124,13 +141,14 @@ DP.config_web_request(
   - `tqdm`
   - `openpyxl`
   - `scipy`
+  - `streamlit>=1.0.0` (Required for GUI)
 - Optional Dependencies (install as needed, if not installed, then send the request using `requests`.):
   - `pubchempy>=1.0.4`: For PubChem integration
   - `chemspipy>=2.0.0`: For ChemSpider (requires API key)
   - `ctx-python>=0.0.1a7`: For CompTox Dashboard (requires API key)
 
 ## License
-MIT License - See [LICENSE](LICENSE) for details
+Apache License 2.0 - See [LICENSE](LICENSE) for details
 
 ## Support
 Report issues on [GitHub Issues](https://github.com/Hya0FAD/DiPTox/issues)

@@ -6,6 +6,7 @@ import re
 from threading import Lock
 from tqdm import tqdm
 from rdkit import Chem
+from rdkit import RDLogger
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
@@ -132,24 +133,53 @@ class WebService:
     def get_properties_batch(self,
                              identifiers: List[str],
                              properties: Set[str],
-                             identifier_type: str) -> List[Dict[str, Optional[str]]]:
+                             identifier_type: str,
+                             progress_callback: Optional[Callable[[int, int], None]] = None) \
+            -> List[Dict[str, Optional[str]]]:
         """Batch acquisition of attributes, using multiple threads internally."""
-        results = [{} for _ in identifiers]
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_index = {
-                executor.submit(self.get_single_property, i, properties, identifier_type):
-                    idx for idx, i in enumerate(identifiers) if i}
+        def is_valid_id(identifier):
+            if identifier is None:
+                return False
+            if pd.isna(identifier):
+                return False
+            if isinstance(identifier, str) and not identifier.strip():
+                return False
+            return True
+        unique_identifiers = list(set([i for i in identifiers if is_valid_id(i)]))
+        results_map = {}
+        default_error_result = {prop: None for prop in properties}
+        default_error_result['Data_Source'] = 'Error'
 
-            for future in tqdm(as_completed(future_to_index), total=len(future_to_index),
+        total_tasks = len(unique_identifiers)
+        completed_count = 0
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_identifier = {
+                executor.submit(self.get_single_property, i, properties, identifier_type): i
+                for i in unique_identifiers
+            }
+
+            for future in tqdm(as_completed(future_to_identifier), total=len(future_to_identifier),
                                desc=f"Query by {identifier_type}"):
-                index = future_to_index[future]
+                identifier = future_to_identifier[future]
                 try:
-                    results[index] = future.result()
+                    results_map[identifier] = future.result()
                 except Exception as e:
-                    logger.error(f"An error occurred while processing the identifier '{identifiers[index]}': {e}")
-                    results[index] = {prop: None for prop in properties}
-                    results[index]['Data_Source'] = 'Error'
-        return results
+                    logger.error(f"An error occurred while processing the identifier '{identifiers}': {e}")
+                    results_map[identifier] = default_error_result
+                completed_count += 1
+                if progress_callback:
+                    progress_callback(completed_count, total_tasks)
+        final_results = []
+        for original_id in identifiers:
+            if is_valid_id(original_id) and original_id in results_map:
+                final_results.append(results_map[original_id])
+            else:
+                empty_res = {prop: None for prop in properties}
+                if is_valid_id(original_id):
+                    empty_res['Data_Source'] = 'Error'
+                final_results.append(empty_res)
+        return final_results
 
     def get_single_property(self,
                             identifier: str,
@@ -489,6 +519,8 @@ class WebService:
     def _get_inchi_from_smiles(smiles: str) -> Optional[str]:
         if not smiles or pd.isna(smiles):
             return None
+        lg = RDLogger.logger()
+        lg.setLevel(RDLogger.CRITICAL)
         try:
             mol = Chem.MolFromSmiles(smiles)
             if not mol:
@@ -497,6 +529,8 @@ class WebService:
             return Chem.MolToInchi(mol)
         except Exception as e:
             return None
+        finally:
+            lg.setLevel(RDLogger.INFO)
 
     def _fetch_via_comptox_sdk(self,
                                identifier: str,
@@ -550,7 +584,7 @@ class WebService:
         if not self._comptox_api_key:
             raise ValueError("CompTox requires an API key.")
 
-        search_base_url = "https://api-ccte.epa.gov/chemical/search/equal"
+        search_base_url = "https://comptox.epa.gov/ctx-api/chemical/search/equal"
         search_identifier = identifier
 
         if id_type == 'smiles':
@@ -579,7 +613,7 @@ class WebService:
             logger.debug(f"CompTox Search for '{identifier}' succeeded but returned no DTXSID.")
             return {}
 
-        details_base_url = "https://api-ccte.epa.gov/chemical/detail/search/by-dtxsid"
+        details_base_url = "https://comptox.epa.gov/ctx-api/chemical/detail/search/by-dtxsid"
         details_url = f"{details_base_url}/{quote(dtxsid)}"
 
         self._increment_request_count()

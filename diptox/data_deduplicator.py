@@ -15,6 +15,7 @@ class DataDeduplicator:
                  data_type: str = "continuous",
                  method: str = "auto",
                  p_threshold: float = 0.05,
+                 priority: Optional[List[str]] = None,
                  custom_method: Optional[Callable[[pd.Series], Tuple[pd.Series, str]]] = None):
         """
         :param smiles_col: The name of the SMILES column
@@ -23,6 +24,7 @@ class DataDeduplicator:
         :param data_type: Data type - "discrete" or "continuous"
         :param method: Existing method of data deduplication (e.g., auto, vote, 3sigma, IQR.)
         :param p_threshold: Threshold of normal distribution
+        :param priority: List of values in descending order of priority for discrete deduplication
         :param custom_method: Custom method of data deduplication
         """
         self.smiles_col = smiles_col
@@ -32,6 +34,7 @@ class DataDeduplicator:
         self.method = method
         self.custom_method = custom_method
         self._p_threshold = p_threshold
+        self.priority_list = priority
 
         if custom_method and not callable(custom_method):
             raise ValueError("custom_outlier_handler must be a callable function")
@@ -46,7 +49,7 @@ class DataDeduplicator:
             logger.info(
                 f"Data type is 'smiles'. The target column '{self.target_col}' will be ignored during deduplication.")
 
-    def deduplicate(self, df: pd.DataFrame) -> pd.DataFrame:
+    def deduplicate(self, df: pd.DataFrame, progress_callback: Optional[Callable] = None) -> pd.DataFrame:
         """Main deduplication method"""
         self._validate_columns(df)
         df = df[df[self.smiles_col].notna()]
@@ -59,7 +62,7 @@ class DataDeduplicator:
             return self._process_without_target(grouped)
 
         if self.target_col:
-            return self._process_with_target(grouped, self._p_threshold)
+            return self._process_with_target(grouped, self._p_threshold, progress_callback)
         return self._process_without_target(grouped)
 
     def _validate_columns(self, df: pd.DataFrame):
@@ -76,41 +79,44 @@ class DataDeduplicator:
         """Simple deduplication without target value"""
         logger.info("Performing simple deduplication by SMILES")
         deduplicated_df = grouped.first().reset_index()
-        return deduplicated_df.assign(DeduplicateMethod='smiles_only')
+        return deduplicated_df.assign(**{'Deduplication Strategy': 'smiles_only'})
 
-    def _process_with_target(self, grouped, p_threshold: float) -> pd.DataFrame:
+    def _process_with_target(self, grouped, p_threshold: float,
+                             progress_callback: Optional[Callable] = None) -> pd.DataFrame:
         """Complex deduplication with target value"""
         logger.info(f"Processing deduplication with target ({self.data_type} data)")
 
         processed = []
-        for name, group in grouped:
-            if len(group) == 1:
-                if pd.isna(group[self.target_col].iloc[0]):
-                    smiles_identifier = group[self.smiles_col].iloc[0]
-                    logger.info(
-                        f"Deleting single record for SMILES '{smiles_identifier}' because its target value is invalid.")
-                    continue
-                else:
-                    group[self.target_col + '_new'] = group[self.target_col]
-                    processed.append(self._mark_record(group, method='no change'))
-                    continue
+        total_groups = len(grouped)
+        for i, (name, group) in enumerate(grouped):
+            if progress_callback and i % 50 == 0:
+                progress_callback(i + 1, total_groups)
+            valid_group = group.dropna(subset=[self.target_col])
 
-            if group[self.target_col].isnull().all():
-                smiles_identifier = group[self.smiles_col].iloc[0]
-                logger.info(f"Skipping group for SMILES '{smiles_identifier}' because all target values are invalid.")
+            if valid_group.empty:
+                logger.debug(f"Dropped group {name} due to all NaN targets.")
+                continue
+
+            if len(valid_group) == 1:
+                valid_group = valid_group.copy()
+                valid_group[self.target_col + '_new'] = valid_group[self.target_col]
+                processed.append(self._mark_record(valid_group, method='no change'))
                 continue
 
             if self.data_type == "discrete":
-                processed_group = self._handle_discrete(group)
+                processed_group = self._handle_discrete(valid_group)
             else:
-                processed_group = self._handle_continuous(group, p_threshold)
+                processed_group = self._handle_continuous(valid_group, p_threshold)
 
             if not processed_group.empty:
                 processed.append(processed_group)
 
+        if progress_callback:
+            progress_callback(total_groups, total_groups)
+
         if not processed:
             original_columns = list(grouped.obj.columns)
-            new_columns = [self.target_col + '_new', 'DeduplicateMethod']
+            new_columns = [self.target_col + '_new', 'Deduplication Strategy']
             final_columns = original_columns + new_columns
             return pd.DataFrame(columns=final_columns)
 
@@ -118,6 +124,14 @@ class DataDeduplicator:
 
     def _handle_discrete(self, group: pd.DataFrame) -> pd.DataFrame:
         """Handle discrete data"""
+        if self.priority_list:
+            for priority_val in self.priority_list:
+                matches = group[group[self.target_col] == priority_val]
+                if not matches.empty:
+                    final_record = matches.head(1).copy()
+                    final_record[self.target_col + '_new'] = priority_val
+                    return self._mark_record(final_record, method=f'priority_{priority_val}')
+
         counts = group[self.target_col].value_counts()
         max_count = counts.max()
 
@@ -144,7 +158,10 @@ class DataDeduplicator:
             clean_values, method = self._remove_outliers(values, p_threshold)
 
         final_value = clean_values.mean()
-        final_record = group.iloc[[values.sub(final_value).abs().argmin()]].copy()
+        valid_indices = clean_values.index
+        valid_group = group.loc[valid_indices]
+        best_idx = valid_group[self.target_col].sub(final_value).abs().idxmin()
+        final_record = group.loc[[best_idx]].copy()
         final_record[self.target_col + '_new'] = final_value
         return self._mark_record(final_record, method=method)
 
@@ -203,7 +220,7 @@ class DataDeduplicator:
         """Mark processed record"""
         record = record.copy()
         if method:
-            record["DeduplicateMethod"] = method
+            record["Deduplication Strategy"] = method
         return record
 
     @classmethod

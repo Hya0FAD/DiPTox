@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.1.0-blue) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.2.0-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">
@@ -8,7 +8,15 @@
 
 **DiPTox** 是一个专为分子数据集的稳健预处理、标准化及多源数据整合而设计的 Python 工具包，专注于计算毒理学工作流。
 
+## v1.2 新特性：交互式 GUI
+DiPTox 现在包含一个基于 Streamlit 的用户友好型 **图形用户界面 (GUI)**。用户可以通过可视化的 Web 界面执行数据加载、预处理、Web 检索和去重，无需编写任何代码。
+
 ## 核心功能
+
+#### 图形用户界面 (GUI)
+-   **可视化操作**：通过浏览器完全控制工作流
+-   **实时预览**：应用规则后即时查看数据变化
+-   **规则管理**：交互式添加/移除有效原子、盐和溶剂
 
 #### 化学预处理与标准化
 一个可配置的管道，用于按特定、可控的顺序清洗和规范化化学结构：
@@ -43,6 +51,13 @@
 ```bash
 pip install -i https://test.pypi.org/simple/ diptox
 ```
+
+## 图形用户界面 (GUI)
+安装完成后，您可以直接从终端启动图形界面：
+```bash
+diptox-gui
+```
+该命令将自动在您的默认 Web 浏览器中打开 DiPTox 界面。
 
 ## 快速入门
 ```python
@@ -85,7 +100,7 @@ DP.preprocess(
 )
 
 # 配置去重
-DP.config_deduplicator(condition_cols, data_type, method, custom_method)
+DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority)
 DP.data_deduplicate()
 
 # 配置Web查询
@@ -126,13 +141,14 @@ DP.config_web_request(
   - `tqdm`
   - `openpyxl`
   - `scipy`
+  - `streamlit>=1.0.0` (运行 GUI 所需)
 - **可选依赖** (根据需要安装，如不安装则使用`requests`发送请求):
   - `pubchempy>=1.0.4`: 用于 PubChem 集成
   - `chemspipy>=2.0.0`: 用于 ChemSpider 集成 (需要 API 密钥)
   - `ctx-python>=0.0.1a7`: 用于 CompTox Dashboard 集成 (需要 API 密钥)
 
 ## 许可证
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件。
+本项目采用 Apache 2.0 许可证 - 详见 [LICENSE](LICENSE) 文件。
 
 ## 支持
 如有问题，请在 [GitHub Issues](https://github.com/Hya0FAD/DiPTox/issues) 上提交。

@@ -64,20 +64,62 @@ class DiptoxPipeline:
         :param sep: CSV file delimiter.
         """
         df = self.data_handler.load_data(input_data, smiles_col, cas_col, target_col, inchikey_col, id_col, **kwargs)
-        processing_cols = {
-            'Canonical smiles': None,
-            'IsValid': False,
-            'ProcessingComments': ''
-        }
-        cols_to_add = {k: v for k, v in processing_cols.items() if k not in df.columns}
-        if cols_to_add:
-            df = df.assign(**cols_to_add)
+
+        if 'Canonical SMILES' not in df.columns:
+            df['Canonical SMILES'] = pd.Series(pd.NA, index=df.index, dtype="string")
+        if 'Processing Log' not in df.columns:
+            df['Processing Log'] = pd.Series(pd.NA, index=df.index, dtype="string")
+        if 'Is Valid' not in df.columns:
+            df['Is Valid'] = pd.Series(False, index=df.index, dtype="boolean")
+
+        try:
+            df['Canonical SMILES'] = df['Canonical SMILES'].astype("string")
+        except Exception:
+            df['Canonical SMILES'] = pd.Series(pd.NA, index=df.index, dtype="string")
+        try:
+            df['Processing Log'] = df['Processing Log'].astype("string")
+        except Exception:
+            df['Processing Log'] = pd.Series(pd.NA, index=df.index, dtype="string")
+        try:
+            df['Is Valid'] = df['Is Valid'].astype("boolean")
+        except Exception:
+            df['Is Valid'] = pd.Series(False, index=df.index, dtype="boolean")
+
         self.df = df
         self.smiles_col = smiles_col
         self.cas_col = cas_col
+        self.name_col = name_col
         self.target_col = target_col
         self.inchikey_col = inchikey_col
         self.id_col = id_col
+
+    def _ensure_dtypes_after_load(self) -> None:
+        """
+        Ensure critical columns use stable pandas extension dtypes to avoid
+        FutureWarning when assigning incompatible values.
+        """
+        # string columns
+        for col in ["Canonical SMILES", "Processing Log"]:
+            if col not in self.df.columns:
+                self.df[col] = pd.Series(pd.NA, index=self.df.index, dtype="string")
+            else:
+                # Cast to pandas StringDtype regardless of current dtype
+                self.df[col] = self.df[col].astype("string")
+
+        # boolean column (nullable boolean dtype)
+        if "Is Valid" not in self.df.columns:
+            self.df["Is Valid"] = pd.Series(False, index=self.df.index, dtype="boolean")
+        else:
+            # Safe cast; non-boolean will be coerced to NA where needed
+            try:
+                self.df["Is Valid"] = self.df["Is Valid"].astype("boolean")
+            except Exception:
+                # Fallback: map common truthy/falsey to boolean, else NA
+                self.df["Is Valid"] = (
+                    self.df["Is Valid"]
+                    .map(lambda v: True if v in [True, 1, "True", "true"] else (False if v in [False, 0, "False", "false"] else pd.NA))
+                    .astype("boolean")
+                )
 
     @check_data_loaded
     def preprocess(self, remove_salts: bool = True,
@@ -94,7 +136,8 @@ class DiptoxPipeline:
                    keep_largest_fragment: bool = True,
                    hac_threshold: int = 3,
                    sanitize: bool = True,
-                   reject_radical_species: bool = True) -> pd.DataFrame:
+                   reject_radical_species: bool = True,
+                   progress_callback: Optional[Callable[[int, int], None]] = None) -> pd.DataFrame:
         """
         Execute the chemical processing pipeline.\
         :param remove_salts: Whether to remove salts.
@@ -115,6 +158,8 @@ class DiptoxPipeline:
         :param reject_radical_species: Molecules containing free radical atoms are directly rejected.
         :return: Processed DataFrame with results.
         """
+        self._ensure_dtypes_after_load()
+
         # Build processing steps
         steps: List[Callable[[Chem.Mol], Optional[Chem.Mol]]] = []
         step_descriptions: List[str] = []
@@ -174,6 +219,8 @@ class DiptoxPipeline:
             steps.append(atom_validator)
             step_descriptions.append("Atom validation")
 
+        total_rows = len(self.df)
+
         # Process each molecule
         for idx, row in tqdm(self.df.iterrows(), total=len(self.df), desc="Processing"):
             smiles = row[self.smiles_col]
@@ -210,29 +257,36 @@ class DiptoxPipeline:
             else:
                 self._update_row(idx, False, "; ".join(comments), None)
 
+            if progress_callback and idx % 10 == 0:
+                progress_callback(idx + 1, total_rows)
+
+        if progress_callback:
+            progress_callback(total_rows, total_rows)
         self._preprocess_key = 1
         return self.df
 
     def _update_row(self, idx, is_valid: bool, comment: str, smiles: Optional[str]) -> None:
         """Update the result row for a given index."""
-        self.df.at[idx, 'IsValid'] = is_valid
-        self.df.at[idx, 'ProcessingComments'] = comment
-        self.df.at[idx, 'Canonical smiles'] = smiles
+        self.df.at[idx, 'Is Valid'] = bool(is_valid)
+        self.df.at[idx, 'Processing Log'] = "" if comment is None else str(comment)
+        self.df.at[idx, 'Canonical SMILES'] = (pd.NA if smiles is None else str(smiles))
 
     def config_deduplicator(self, condition_cols: Optional[List[str]] = None,
                             data_type: str = "continuous",
                             method: str = "auto",
+                            priority: Optional[List[str]] = None,
                             p_threshold: float = 0.05,
                             custom_method: Optional[Callable] = None) -> None:
         """
         Configure the deduplicator device
         :param condition_cols: Data condition column (e.g. temperature, pressure, etc.)
         :param data_type: data type - discrete/continuous
-        :param method: Existing method of data deduplication (e.g., auto, vote, 3sigma, IQR.)
+        :param method: Existing method of data deduplication (e.g., auto, vote, priority, 3sigma, IQR.)
+        :param priority: List of preferred values for discrete data
         :param p_threshold: Threshold of normal distribution
         :param custom_method: Custom method of data deduplication
         """
-        smiles_col = 'Canonical smiles' if self._preprocess_key else self.smiles_col
+        smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
 
         self.deduplicator = DataDeduplicator(
             smiles_col=smiles_col,
@@ -241,16 +295,17 @@ class DiptoxPipeline:
             data_type=data_type,
             method=method,
             p_threshold=p_threshold,
+            priority=priority,
             custom_method=custom_method
         )
 
     @check_data_loaded
-    def data_deduplicate(self) -> None:
+    def dataset_deduplicate(self, progress_callback: Optional[Callable] = None) -> None:
         """Execution deduplicator removal"""
         if not self.deduplicator:
             raise ValueError("Deduplicator not configured. Call config_deduplicator first.")
 
-        self.df = self.deduplicator.deduplicate(self.df)
+        self.df = self.deduplicator.deduplicate(self.df, progress_callback=progress_callback)
         if self.target_col:
             self.target_col = self.target_col + "_new"
 
@@ -264,14 +319,22 @@ class DiptoxPipeline:
         """
         searcher = SubstructureSearcher(
             df=self.df,
-            smiles_col='Canonical smiles' if self._preprocess_key else self.smiles_col,
+            smiles_col='Canonical SMILES' if self._preprocess_key else self.smiles_col,
         )
         query_pattern_list = [query_pattern] if isinstance(query_pattern, str) else query_pattern
         for query_pattern in query_pattern_list:
             results = searcher.search(query_pattern, is_smarts)
-            self.df[f'Substructure_{query_pattern}'] = False
+            col_name = f'Substructure_{query_pattern}'
+            if col_name not in self.df.columns:
+                self.df[col_name] = pd.Series(False, index=self.df.index, dtype="boolean")
+            else:
+                try:
+                    self.df[col_name] = self.df[col_name].astype("boolean")
+                except Exception:
+                    self.df[col_name] = pd.Series(False, index=self.df.index, dtype="boolean")
+
             for idx, _ in results['matches']:
-                self.df.at[idx, f'Substructure_{query_pattern}'] = True
+                self.df.at[idx, col_name] = True
 
     def config_web_request(self, sources: Union[str, List[str]] = 'pubchem',
                            interval: int = 0.3,
@@ -305,7 +368,8 @@ class DiptoxPipeline:
                                       cas_api_key=cas_api_key,force_api_mode=force_api_mode)
 
     @check_data_loaded
-    def web_request(self, send: Union[str, List[str]], request: Union[str, List[str]]) -> None:
+    def web_request(self, send: Union[str, List[str]], request: Union[str, List[str]],
+                    progress_callback: Optional[Callable] = None) -> None:
         """
         Add CAS numbers for valid molecules.
         :param send: What is used to request additional data? (smiles/cas)
@@ -314,8 +378,8 @@ class DiptoxPipeline:
         if self.web_service is None:
             raise ValueError("The WebService has not been configured. Please call the config_web_request first.")
         send_by_list = [send] if isinstance(send, str) else send
+        send_ordered = list(dict.fromkeys([prop.strip().lower() for prop in send_by_list]))
         request_list = [request] if isinstance(request, str) else request
-        send_set = {prop.strip().lower() for prop in send_by_list}
         request_set = {prop.strip().lower() for prop in request_list}
 
         VALID_PROPERTIES = {'smiles', 'cas', 'iupac', 'mw', 'name'}
@@ -323,17 +387,35 @@ class DiptoxPipeline:
         if invalid_props:
             raise ValueError(f"Invalid request properties: {list(invalid_props)}")
 
-        col_map = {'cas': self.cas_col, 'name': self.name_col, 'smiles': self.smiles_col}
+        smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
+        col_map = {'cas': self.cas_col, 'name': self.name_col, 'smiles': smiles_col}
+
         for prop in request_set:
-            self.df[f'{prop}_from_web'] = None
-        self.df['Query_Status'] = 'Pending'
-        self.df['Data_Source'] = None
-        self.df['Query_Method'] = None
+            col = f'{prop}_from_web'
+            if col not in self.df.columns:
+                self.df[col] = pd.Series(pd.NA, index=self.df.index, dtype="string")
+            else:
+                try:
+                    self.df[col] = self.df[col].astype("string")
+                except Exception:
+                    self.df[col] = pd.Series(pd.NA, index=self.df.index, dtype="string")
+
+        for meta_col in ['Query_Status', 'Data_Source', 'Query_Method']:
+            if meta_col not in self.df.columns:
+                self.df[meta_col] = pd.Series(pd.NA, index=self.df.index, dtype="string")
+            else:
+                try:
+                    self.df[meta_col] = self.df[meta_col].astype("string")
+                except Exception:
+                    self.df[meta_col] = pd.Series(pd.NA, index=self.df.index, dtype="string")
+
+        self.df['Query_Status'] = "Pending"
 
         pending_indices = list(self.df.index)
 
         try:
-            for id_type in send_set:
+            total_steps = len(send_ordered)
+            for step_idx, id_type in enumerate(send_ordered):
                 if not pending_indices:
                     break
 
@@ -348,7 +430,12 @@ class DiptoxPipeline:
                     identifiers_to_query = [self.web_service._validate_and_clean_cas(cas) for cas in
                                             identifiers_to_query]
 
-                results = self.web_service.get_properties_batch(identifiers_to_query, request_set, id_type)
+                results = self.web_service.get_properties_batch(
+                    identifiers_to_query,
+                    request_set,
+                    id_type,
+                    progress_callback=progress_callback
+                )
 
                 processed_indices = []
                 for i, original_index in enumerate(pending_indices):
@@ -371,6 +458,14 @@ class DiptoxPipeline:
 
             logger.info("Web request processing is complete.")
 
+            if 'smiles' in request_set:
+                if not self._preprocess_key:
+                    self.smiles_col = 'smiles_from_web'
+            if 'cas' in request:
+                self.cas_col = 'cas_from_web'
+            if 'name' in request:
+                self.name_col = 'name_from_web'
+
         except requests.exceptions.RequestException as e:
             logger.error(f"An error occurred on the network, and the web request was interrupted: {e}")
             self.df.loc[pending_indices, 'Query_Status'] = 'Network Error'
@@ -379,6 +474,35 @@ class DiptoxPipeline:
             logger.error(f"An unknown error occurred during the web request: {e}")
             self.df.loc[pending_indices, 'Query_Status'] = 'Unknown Error'
             raise
+
+    @check_data_loaded
+    def calculate_inchi(self) -> None:
+        """
+        Calculate InChI strings locally using RDKit based on the current SMILES column.
+        No web request required.
+        """
+        smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
+        inchi_col = 'InChI'
+
+        if inchi_col not in self.df.columns:
+            self.df[inchi_col] = pd.Series(pd.NA, index=self.df.index, dtype="string")
+
+        logger.info("Calculating InChI from SMILES using RDKit...")
+
+        count = 0
+        for idx, row in tqdm(self.df.iterrows(), total=len(self.df), desc="InChI Calc"):
+            smiles = row[smiles_col]
+            if pd.isna(smiles):
+                continue
+
+            mol = self.chem_processor.smiles_to_mol(smiles, sanitize=True)
+            inchi = self.chem_processor.mol_to_inchi(mol)
+
+            if inchi:
+                self.df.at[idx, inchi_col] = inchi
+                count += 1
+
+        logger.info(f"InChI calculation complete. Generated {count} InChI strings.")
 
     @check_data_loaded
     def filter_by_atom_count(self,
@@ -398,10 +522,19 @@ class DiptoxPipeline:
             return
 
         initial_count = len(self.df)
-        smiles_col = 'Canonical smiles' if self._preprocess_key else self.smiles_col
+        smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
 
-        def is_valid_by_atom_count(s):
-            mol = self.chem_processor.smiles_to_mol(s, sanitize=False)  # Use internal method
+        def is_valid_by_atom_count(row):
+            s = row[smiles_col]
+            if pd.isna(s) or str(s).strip() == "":
+                return False
+
+            if self._preprocess_key and 'Is Valid' in row.index and not pd.isna(row['Is Valid']):
+                if not row['Is Valid']:
+                    return False
+
+            mol = self.chem_processor.smiles_to_mol(s, sanitize=True)
+
             return self.chem_processor.validate_atom_count(
                 mol,
                 min_heavy_atoms,
@@ -410,8 +543,7 @@ class DiptoxPipeline:
                 max_total_atoms
             )
 
-        # Build the filter mask
-        mask = self.df[smiles_col].apply(is_valid_by_atom_count)
+        mask = self.df.apply(is_valid_by_atom_count, axis=1)
 
         self.df = self.df[mask].reset_index(drop=True)
         final_count = len(self.df)
@@ -426,7 +558,7 @@ class DiptoxPipeline:
         :param columns: The columns to save (default saves all columns).
         """
         save_cols = columns if columns else self.df.columns.tolist()
-        self.data_handler.save_data(self.df, output_path, save_cols, 'Canonical smiles' if self._preprocess_key else self.smiles_col, self.id_col)
+        self.data_handler.save_data(self.df, output_path, save_cols, 'Canonical SMILES' if self._preprocess_key else self.smiles_col, self.id_col)
 
     # Chemical rule management interface
     def add_neutralization_rule(self, reactant: str, product: str) -> None:

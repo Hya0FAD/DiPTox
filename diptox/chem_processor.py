@@ -238,6 +238,17 @@ class ChemistryProcessor:
             logger.info(f"Default solvent removed globally: {smarts}")
 
     @staticmethod
+    def mol_to_inchi(mol: Chem.Mol) -> Optional[str]:
+        """Convert a molecule to InChI string using RDKit locally."""
+        if mol is None:
+            return None
+        try:
+            return Chem.MolToInchi(mol)
+        except Exception as e:
+            logger.warning(f"Failed to generate InChI: {str(e)}")
+            return None
+
+    @staticmethod
     def CombineFragments(fragments: list[Chem.Mol]) -> Chem.Mol:
         """Combine multiple fragments into a single molecule."""
         smiles = [Chem.MolToSmiles(f, isomericSmiles=True, canonical=True) for f in fragments]
@@ -513,6 +524,29 @@ class ChemistryProcessor:
             print(f"    - {Chem.MolToSmiles(solvent_mol)}")
 
         print("\n--- End of Rules ---")
+
+    def get_current_rules_dict(self) -> dict:
+        """Return current rules as a dictionary for GUI display."""
+        current_salts = []
+        for mol in self._get_effective_salts():
+            try:
+                current_salts.append(Chem.MolToSmarts(mol))
+            except:
+                current_salts.append("Invalid Salt Pattern")
+
+        current_solvents = []
+        for mol in self._get_effective_solvents():
+            try:
+                current_solvents.append(Chem.MolToSmiles(mol, isomericSmiles=True))
+            except:
+                current_solvents.append("Invalid Solvent Pattern")
+
+        return {
+            "atoms": sorted(list(self._valid)),
+            "salts": current_salts,
+            "solvents": current_solvents,
+            "neutralization": self._neutralization_rules
+        }
 
     @staticmethod
     def validate_atom_count(mol: Optional[Chem.Mol],
