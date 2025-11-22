@@ -10,6 +10,17 @@ st.set_page_config(
     layout="wide"
 )
 
+st.markdown(
+    """
+    <style>
+    .stAppDeployButton {
+        visibility: hidden;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # --- Session State ---
 if 'pipeline' not in st.session_state:
     st.session_state.pipeline = DiptoxPipeline()
@@ -57,93 +68,186 @@ def add_rule_log(message):
     st.toast(message, icon="✅")
 
 
-# ==============================================================================
 # Data Loading
-# ==============================================================================
 if step == "Data Loading":
     st.header("Data Loading")
-    st.markdown("Supports: `.csv`, `.xlsx`, `.xls`, `.txt`, `.sdf`, `.smi`")
 
-    uploaded_file = st.file_uploader("Upload Dataset", type=['csv', 'xlsx', 'xls', 'txt', 'smi', 'sdf'])
+    tab_file, tab_text = st.tabs(["Upload File", "Paste SMILES List"])
 
-    if uploaded_file:
-        temp_filename = f"temp_upload_{uploaded_file.name}"
+    with tab_file:
+        st.markdown("Supports: `.csv`, `.xlsx`, `.xls`, `.txt`, `.sdf`, `.smi`")
+        st.warning("⚠️ Note: For files larger than 200MB, please use the Python script directly.")
 
-        with open(temp_filename, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+        uploaded_file = st.file_uploader("Upload Dataset", type=['csv', 'xlsx', 'xls', 'txt', 'smi', 'sdf'])
 
-        selected_sheet = None
-        if uploaded_file.name.endswith(('.xlsx', '.xls')):
+        if uploaded_file:
+            temp_filename = f"temp_upload_{uploaded_file.name}"
+
+            with open(temp_filename, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+
+            detected_cols = []
+            selected_sheet = None
+            file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+
             try:
-                with pd.ExcelFile(temp_filename) as xl:
-                    if len(xl.sheet_names) > 1:
-                        st.info(f"Multi-sheet Excel detected. Please select one.")
-                        selected_sheet = st.selectbox("Select Excel Sheet:", xl.sheet_names)
+                # === 1. Excel ===
+                if file_ext in ['.xlsx', '.xls']:
+                    with pd.ExcelFile(temp_filename) as xl:
+                        sheet_names = xl.sheet_names
+                        if len(sheet_names) > 1:
+                            st.info(f"Multi-sheet Excel detected.")
+                            selected_sheet = st.selectbox("Select Excel Sheet:", sheet_names)
+                        else:
+                            selected_sheet = sheet_names[0]
+
+                        df_preview = pd.read_excel(temp_filename, sheet_name=selected_sheet, nrows=5)
+                        detected_cols = list(df_preview.columns)
+
+                # === 2. SDF ===
+                elif file_ext == '.sdf':
+                    from rdkit import Chem
+
+                    suppl = Chem.SDMolSupplier(temp_filename)
+                    if len(suppl) > 0:
+                        mol = suppl[0]
+                        if mol:
+                            detected_cols = list(mol.GetPropsAsDict().keys())
                     else:
-                        selected_sheet = xl.sheet_names[0]
-            except Exception as e:
-                st.error(f"Error reading Excel file structure: {e}")
+                        st.warning("Empty SDF file?")
 
-        with st.expander("Column Configuration", expanded=True):
-            c1, c2 = st.columns(2)
-            smiles_col = c1.text_input("SMILES Column (Optional)", value="", placeholder="e.g., Smiles")
-            target_col = c2.text_input("Target Column (Optional)", value="")
+                # === 3. CSV/TXT/SMI ===
+                else:
+                    sep = '\t' if file_ext in ['.txt', '.smi'] else ','
+                    try:
+                        df_preview = pd.read_csv(temp_filename, sep=sep, nrows=5)
+                        detected_cols = list(df_preview.columns)
+                    except:
+                        df_preview = pd.read_csv(temp_filename, nrows=5)
+                        detected_cols = list(df_preview.columns)
 
-            c3, c4 = st.columns(2)
-            cas_col = c3.text_input("CAS Column (Optional)", value="")
-            id_col = c4.text_input("ID Column (for .smi)", value="")
-
-            name_col = st.text_input("Name Column (Optional)", value="")
-
-        if st.button("Load Data", type="primary"):
-            try:
-                kwargs = {}
-                if selected_sheet:
-                    kwargs['sheet_name'] = selected_sheet
-
-                final_smiles_col = smiles_col.strip() if smiles_col.strip() else None
-                final_target_col = target_col.strip() if target_col.strip() else None
-                final_cas_col = cas_col.strip() if cas_col.strip() else None
-                final_name_col = name_col.strip() if name_col.strip() else None
-                final_id_col = id_col.strip() if id_col.strip() else None
-
-                pipeline.load_data(
-                    input_data=temp_filename,
-                    smiles_col=final_smiles_col,
-                    cas_col=final_cas_col,
-                    target_col=final_target_col,
-                    name_col=final_name_col,
-                    id_col=final_id_col,
-                    **kwargs
-                )
-
-                st.session_state.highlight_cols = [
-                    c for c in [final_smiles_col, final_target_col, final_cas_col, final_name_col, final_id_col]
-                    if c is not None
-                ]
-
-                update_preview()
-                st.success(f"Successfully loaded {len(pipeline.df)} records!")
+                detected_cols = [str(c) for c in detected_cols]
 
             except Exception as e:
-                st.error(f"Error loading data: {str(e)}")
-            finally:
+                st.error(f"Failed to parse headers: {e}")
+                detected_cols = []
+
+            if detected_cols:
+                st.success(f"✅ Detected {len(detected_cols)} columns.")
+
+                options_with_none = ["(None)"] + detected_cols
+
+                with st.expander("Column Configuration", expanded=True):
+                    st.caption("Map your file columns to DiPTox fields. All fields are optional.")
+
+                    c1, c2 = st.columns(2)
+
+                    # 1. SMILES Column
+                    smiles_col = c1.selectbox("SMILES Column (Optional)", options_with_none, index=0)
+
+                    # 2. Target Column
+                    target_col = c2.selectbox("Target Column (Optional)", options_with_none, index=0)
+
+                    c3, c4 = st.columns(2)
+
+                    # 3. CAS Column
+                    cas_col = c3.selectbox("CAS Column (Optional)", options_with_none, index=0)
+
+                    # 4. ID Column
+                    id_col = c4.selectbox("ID Column (for .smi/.sdf)", options_with_none, index=0)
+
+                    # 5. Name Column
+                    name_col = st.selectbox("Name Column (Optional)", options_with_none, index=0)
+
+            else:
+                st.warning("Could not detect columns automatically. Please enter manually.")
+                with st.expander("Column Configuration", expanded=True):
+                    c1, c2 = st.columns(2)
+                    smiles_col = c1.text_input("SMILES Column (Optional)", value="")
+                    target_col = c2.text_input("Target Column (Optional)", value="")
+                    c3, c4 = st.columns(2)
+                    cas_col = c3.text_input("CAS Column (Optional)", value="")
+                    id_col = c4.text_input("ID Column (for .smi)", value="")
+                    name_col = st.text_input("Name Column (Optional)", value="")
+
+            if st.button("Load Data from File", type="primary"):
                 try:
-                    import time
-                    import gc
+                    kwargs = {}
+                    if selected_sheet:
+                        kwargs['sheet_name'] = selected_sheet
 
-                    gc.collect()
+                    def clean_col_name(val):
+                        if val == "(None)": return None
+                        if isinstance(val, str) and val.strip() == "": return None
+                        return val
 
-                    if os.path.exists(temp_filename):
-                        os.remove(temp_filename)
-                except PermissionError:
-                    print(f"Warning: Could not delete temp file {temp_filename} immediately due to file lock.")
+                    final_smiles = clean_col_name(smiles_col)
+                    final_target = clean_col_name(target_col)
+                    final_cas = clean_col_name(cas_col)
+                    final_name = clean_col_name(name_col)
+                    final_id = clean_col_name(id_col)
+
+                    pipeline.load_data(
+                        input_data=temp_filename,
+                        smiles_col=final_smiles,
+                        cas_col=final_cas,
+                        target_col=final_target,
+                        name_col=final_name,
+                        id_col=final_id,
+                        **kwargs
+                    )
+
+                    st.session_state.highlight_cols = [
+                        c for c in [final_smiles, final_target, final_cas, final_name, final_id]
+                        if c is not None
+                    ]
+
+                    update_preview()
+                    st.success(f"Successfully loaded {len(pipeline.df)} records!")
+
                 except Exception as e:
-                    print(f"Warning: Error deleting temp file: {e}")
+                    st.error(f"Error loading data: {str(e)}")
+                finally:
+                    try:
+                        import gc
+                        gc.collect()
+                        if os.path.exists(temp_filename):
+                            os.remove(temp_filename)
+                    except:
+                        pass
 
-# ==============================================================================
+    with tab_text:
+        st.info("Paste a list of SMILES strings, one per line.")
+
+        raw_text = st.text_area("SMILES List", height=300, placeholder="C\nCC\nCCC\nCN(C)C=O")
+
+        c_t1, c_t2 = st.columns([1, 1])
+        custom_smiles_col = c_t1.text_input("Resulting Column Name", value="Smiles")
+
+        if st.button("Load Data from Text", type="primary"):
+            if not raw_text.strip():
+                st.error("Please enter some SMILES strings.")
+            else:
+                try:
+                    smiles_list = [line.strip() for line in raw_text.split('\n') if line.strip()]
+
+                    if not smiles_list:
+                        st.error("No valid lines found.")
+                    else:
+                        pipeline.load_data(
+                            input_data=smiles_list,
+                            smiles_col=custom_smiles_col
+                        )
+
+                        st.session_state.highlight_cols = [custom_smiles_col]
+
+                        update_preview()
+                        st.success(f"Successfully loaded {len(pipeline.df)} SMILES!")
+
+                except Exception as e:
+                    st.error(f"Error loading text data: {str(e)}")
+
 # Preprocessing (Rules & Run)
-# ==============================================================================
 elif step == "Preprocessing":
     st.header("Preprocessing & Standardization")
 
@@ -155,55 +259,106 @@ elif step == "Preprocessing":
         with st.expander("🛠️ Manage & View Chemical Rules", expanded=False):
             st.caption("Add or remove rules. Changes are applied immediately.")
 
-            # 1. Atoms
+            # --- 1. Atoms ---
             c1, c2, c3 = st.columns([3, 1, 1], vertical_alignment="bottom")
             atom_input = c1.text_input("Valid Atoms", placeholder="e.g., Si, Zr", key="atom_in")
-            if c2.button("➕ Add", key="btn_add_atom", width="stretch"):
-                if atom_input:
-                    pipeline.manage_atom_rules(atoms=[x.strip() for x in atom_input.split(',')], add=True)
-                    add_rule_log(f"Added atom(s): {atom_input}")
-            if c3.button("➖ Del", key="btn_del_atom", width="stretch"):
-                if atom_input:
-                    pipeline.manage_atom_rules(atoms=[x.strip() for x in atom_input.split(',')], add=False)
-                    add_rule_log(f"Removed atom(s): {atom_input}")
 
-            # 2. Salts
+            if c2.button("➕ Add", key="btn_add_atom", width="stretch"):
+                if not atom_input.strip():
+                    st.error("Empty input")
+                else:
+                    atoms = [x.strip() for x in atom_input.split(',') if x.strip()]
+                    failed = pipeline.manage_atom_rules(atoms=atoms, add=True)
+                    if failed:
+                        st.error(f"Failed to add invalid atoms: {failed}")
+                    else:
+                        add_rule_log(f"Added atom(s): {atom_input}")
+                        st.rerun()
+
+            if c3.button("➖ Del", key="btn_del_atom", width="stretch"):
+                if not atom_input.strip():
+                    st.error("Empty input")
+                else:
+                    atoms = [x.strip() for x in atom_input.split(',') if x.strip()]
+                    failed = pipeline.manage_atom_rules(atoms=atoms, add=False)
+                    if failed:
+                        st.warning(f"Could not find/remove: {failed}")
+                    else:
+                        add_rule_log(f"Removed atom(s): {atom_input}")
+                        st.rerun()
+
+            # --- 2. Salts ---
             c1, c2, c3 = st.columns([3, 1, 1], vertical_alignment="bottom")
             salt_input = c1.text_input("Custom Salts (SMARTS)", placeholder="e.g., [Hg+2]", key="salt_in")
-            if c2.button("➕ Add", key="btn_add_salt", width="stretch"):
-                if salt_input:
-                    pipeline.manage_default_salt(salts=[x.strip() for x in salt_input.split(',')], add=True)
-                    add_rule_log(f"Added salt: {salt_input}")
-            if c3.button("➖ Del", key="btn_del_salt", width="stretch"):
-                if salt_input:
-                    pipeline.manage_default_salt(salts=[x.strip() for x in salt_input.split(',')], add=False)
-                    add_rule_log(f"Removed salt: {salt_input}")
 
-            # 3. Solvents
+            if c2.button("➕ Add", key="btn_add_salt", width="stretch"):
+                if not salt_input.strip():
+                    st.error("Empty input")
+                else:
+                    salts = [x.strip() for x in salt_input.split(',') if x.strip()]
+                    failed = pipeline.manage_default_salt(salts=salts, add=True)
+                    if failed:
+                        st.error(f"Invalid SMARTS patterns: {failed}")
+                    else:
+                        add_rule_log(f"Added salt: {salt_input}")
+                        st.rerun()
+
+            if c3.button("➖ Del", key="btn_del_salt", width="stretch"):
+                if not salt_input.strip():
+                    st.error("Empty input")
+                else:
+                    salts = [x.strip() for x in salt_input.split(',') if x.strip()]
+                    # 这里 remove 我们在 chem_processor 做了宽容处理，一般不返回 failed
+                    pipeline.manage_default_salt(salts=salts, add=False)
+                    add_rule_log(f"Removed salt: {salt_input}")
+                    st.rerun()
+
+            # --- 3. Solvents ---
             c1, c2, c3 = st.columns([3, 1, 1], vertical_alignment="bottom")
             solv_input = c1.text_input("Custom Solvents (SMILES)", placeholder="e.g., CCC", key="solv_in")
-            if c2.button("➕ Add", key="btn_add_solv", width="stretch"):
-                if solv_input:
-                    pipeline.manage_default_solvent(solvents=[x.strip() for x in solv_input.split(',')], add=True)
-                    add_rule_log(f"Added solvent: {solv_input}")
-            if c3.button("➖ Del", key="btn_del_solv", width="stretch"):
-                if solv_input:
-                    pipeline.manage_default_solvent(solvents=[x.strip() for x in solv_input.split(',')], add=False)
-                    add_rule_log(f"Removed solvent: {solv_input}")
 
-            # 4. Neutralization
+            if c2.button("➕ Add", key="btn_add_solv", width="stretch"):
+                if not solv_input.strip():
+                    st.error("Empty input")
+                else:
+                    solvs = [x.strip() for x in solv_input.split(',') if x.strip()]
+                    failed = pipeline.manage_default_solvent(solvents=solvs, add=True)
+                    if failed:
+                        st.error(f"Invalid SMILES: {failed}")
+                    else:
+                        add_rule_log(f"Added solvent: {solv_input}")
+                        st.rerun()
+
+            if c3.button("➖ Del", key="btn_del_solv", width="stretch"):
+                if not solv_input.strip():
+                    st.error("Empty input")
+                else:
+                    solvs = [x.strip() for x in solv_input.split(',') if x.strip()]
+                    pipeline.manage_default_solvent(solvents=solvs, add=False)
+                    add_rule_log(f"Removed solvent: {solv_input}")
+                    st.rerun()
+
+            # --- 4. Neutralization ---
             st.markdown("**Neutralization Rules**")
             c1, c2, c3, c4 = st.columns([1.5, 1.5, 0.5, 0.5], vertical_alignment="bottom")
             react = c1.text_input("Reactant (SMARTS)", key="neu_r")
             prod = c2.text_input("Product (SMILES)", key="neu_p")
+
             if c3.button("➕", key="btn_add_neu", help="Add Rule", width="stretch"):
-                if react and prod:
-                    pipeline.add_neutralization_rule(react, prod)
+                success = pipeline.add_neutralization_rule(react, prod)
+                if success:
                     add_rule_log(f"Added rule: {react} -> {prod}")
-            if c4.button("➖", key="btn_del_neu", help="Remove Rule by Reactant", width="stretch"):
-                if react:
-                    pipeline.remove_neutralization_rule(react)
+                    st.rerun()
+                else:
+                    st.error("Invalid Rule (Check SMARTS/SMILES)")
+
+            if c4.button("➖", key="btn_del_neu", help="Remove Rule", width="stretch"):
+                success = pipeline.remove_neutralization_rule(react)
+                if success:
                     add_rule_log(f"Removed rule: {react}")
+                    st.rerun()
+                else:
+                    st.warning(f"Rule not found: {react}")
 
             # --- Rule Viewer Tabs ---
             st.markdown("---")
@@ -224,30 +379,84 @@ elif step == "Preprocessing":
         # --- B. Execute Preprocessing ---
         st.markdown("### B. Execute Preprocessing")
 
-        col_conf1, col_conf2 = st.columns(2)
-        with col_conf1:
-            st.caption("Cleaning")
-            rm_salts = st.checkbox("Remove Salts", True)
-            rm_solvs = st.checkbox("Remove Solvents", True)
-            rm_mixt = st.checkbox("Remove Mixtures", False)
-            rm_inorg = st.checkbox("Remove Inorganic", True)
-            rm_stereo = st.checkbox("Remove Stereochemistry", False)
-            rm_hs = st.checkbox("Remove Hydrogens", True)
-            rm_iso = st.checkbox("Remove Isotopes", True)
-        with col_conf2:
-            st.caption("Normalization")
-            neu = st.checkbox("Neutralize Charges", True)
-            rej_rad = st.checkbox("Reject Radicals", True)
-            chk_valid = st.checkbox("Check Valid Atoms", False)
-            strict = st.checkbox("Strict Atom Check", False)
-            sanitize = st.checkbox("RDKit Sanitize", True)
-            keep_large = st.checkbox("Keep Largest Fragment", True)
+        col_clean_card, col_norm_card = st.columns(2)
 
-        st.divider()
-        c_sub1, c_sub2 = st.columns(2)
-        hac_thres = c_sub1.number_input("HAC Threshold (Mixtures)", 3)
-        calc_inchi = c_sub2.toggle("Calculate InChI", True)
+        with col_clean_card:
+            with st.container(border=True):
+                st.markdown("#### Cleaning")
+                st.caption("Removal of unwanted fragments")
 
+                # Row 1: Salts | Solvents
+                c_cl1, c_cl2 = st.columns(2)
+                rm_salts = c_cl1.checkbox("Remove Salts", value=True, help="Strip salt fragments.")
+                rm_solvs = c_cl2.checkbox("Remove Solvents", value=True, help="Strip solvent fragments.")
+
+                # Row 2: Inorganic | Mixtures
+                c_cl3, c_cl4 = st.columns(2)
+                rm_inorg = c_cl3.checkbox("Remove Inorganic", value=True, help="Remove inorganic molecules.")
+                rm_mixt = c_cl4.checkbox("Remove Mixtures", value=False,
+                                         help="Handle molecules with multiple disconnected fragments.")
+
+                # Row 3: Keep Largest | HAC Threshold
+                c_cl5, c_cl6 = st.columns(2, vertical_alignment="center")
+
+                # 3.1 Keep Largest
+                keep_large = c_cl5.checkbox("Keep Largest", value=True, disabled=not rm_mixt,
+                                            help="Keep the largest fragment.")
+
+                # 3.2 HAC Config
+                with c_cl6:
+                    c_hac_chk, c_hac_inp = st.columns([1.5, 1], vertical_alignment="center")
+                    use_hac = c_hac_chk.checkbox("HAC Filter", value=True, disabled=not rm_mixt,
+                                                 help="Filter by Heavy Atom Count.")
+                    hac_val = c_hac_inp.number_input("HAC", value=3, min_value=0, label_visibility="collapsed",
+                                                     disabled=(not rm_mixt or not use_hac))
+
+                final_hac_threshold = hac_val if (rm_mixt and use_hac) else 0
+
+        with col_norm_card:
+            with st.container(border=True):
+                st.markdown("#### Normalization")
+                st.caption("Standardization & Validation")
+
+                # RDKit Sanitize
+                c_n0, c_n = st.columns(2)
+                sanitize = c_n0.checkbox("RDKit Sanitize", value=True,
+                                         help="Ensure chemical validity using RDKit (valence, aromaticity, etc.).")
+
+                # Row 2: Hs | Isotopes
+                c_n1, c_n2 = st.columns(2)
+                rm_hs = c_n1.checkbox("Remove Hs", value=True, help="Remove explicit hydrogen atoms.")
+                rm_iso = c_n2.checkbox("Remove Isotopes", value=True,
+                                       help="Remove isotopic information (e.g., [13C] -> C).")
+
+                # Row 3: Stereo | Radicals
+                c_n3, c_n4 = st.columns(2)
+                rm_stereo = c_n3.checkbox("Remove Stereo", value=False,
+                                          help="Remove stereochemistry information (e.g., @, /\\).")
+                rej_rad = c_n4.checkbox("Reject Radicals", value=True,
+                                        help="Discard molecules containing radical electrons.")
+
+                # Row 4: Neutralize | Reject Non-Neutral
+                c_neu1, c_neu2 = st.columns(2)
+                neu = c_neu1.checkbox("Neutralize Charges", value=True,
+                                      help="Neutralize charges based on predefined rules.")
+                rej_non_neu = c_neu2.checkbox("Reject Non-Neutral", value=False, disabled=not neu,
+                                              help="Discard if charge remains after adjustment.")
+
+                # Row 5: Check Valid | Strict Mode
+                c_chk1, c_chk2 = st.columns(2)
+                chk_valid = c_chk1.checkbox("Check Valid Atoms", value=False,
+                                            help="Validate against the allowed atom list.")
+                strict = c_chk2.checkbox("Strict Mode", value=False, disabled=not chk_valid,
+                                         help="Reject entire molecule if invalid atoms found.")
+
+        # --- C. Post-Processing ---
+        st.markdown("### C. Post-Processing")
+        with st.container(border=True):
+            calc_inchi = st.checkbox("Calculate InChI", value=True, help="Generate InChI strings after processing.")
+
+        st.markdown("###")  # Spacer
         if st.button("🚀 Run Preprocessing", type="primary", width="stretch"):
             progress_bar = st.progress(0.0)
             status_text = st.empty()
@@ -262,32 +471,38 @@ elif step == "Preprocessing":
             with st.spinner("Processing molecules..."):
                 try:
                     pipeline.preprocess(
-                        remove_salts=rm_salts, remove_solvents=rm_solvs, remove_mixtures=rm_mixt,
-                        remove_inorganic=rm_inorg, neutralize=neu, reject_non_neutral=False,
-                        check_valid_atoms=chk_valid, strict_atom_check=strict, remove_stereo=rm_stereo,
-                        remove_isotopes=rm_iso, remove_hs=rm_hs, keep_largest_fragment=keep_large,
-                        hac_threshold=hac_thres, sanitize=sanitize, reject_radical_species=rej_rad,
+                        remove_salts=rm_salts,
+                        remove_solvents=rm_solvs,
+                        remove_mixtures=rm_mixt,
+                        remove_inorganic=rm_inorg,
+                        neutralize=neu,
+                        reject_non_neutral=rej_non_neu,
+                        check_valid_atoms=chk_valid,
+                        strict_atom_check=strict,
+                        remove_stereo=rm_stereo,
+                        remove_isotopes=rm_iso,
+                        remove_hs=rm_hs,
+                        keep_largest_fragment=keep_large,
+                        hac_threshold=final_hac_threshold,
+                        sanitize=sanitize,
+                        reject_radical_species=rej_rad,
                         progress_callback=update_progress
                     )
 
                     new_cols = ['Canonical SMILES', 'Is Valid', 'Processing Log']
-
                     if calc_inchi:
                         pipeline.calculate_inchi()
                         new_cols.append('InChI')
 
                     update_highlights(new_cols)
-
                     update_preview()
                     st.success("Preprocessing complete!")
                 except Exception as e:
                     st.error(f"Preprocessing failed: {str(e)}")
 
-# ==============================================================================
 # Web Requests
-# ==============================================================================
 elif step == "Web Requests":
-    st.header("Web Data Enrichment")
+    st.header("Web Requests")
 
     if pipeline.df is None:
         st.warning("Please load data first.")
@@ -401,11 +616,9 @@ elif step == "Web Requests":
                     except Exception as e:
                         st.error(f"Web request failed: {str(e)}")
 
-# ==============================================================================
 # Deduplication
-# ==============================================================================
 elif step == "Deduplication":
-    st.header("Data Deduplication")
+    st.header("Dataset Deduplication")
 
     if pipeline.df is None:
         st.warning("Please load data first.")
@@ -453,9 +666,7 @@ elif step == "Deduplication":
             except Exception as e:
                 st.error(f"Deduplication failed: {str(e)}")
 
-# ==============================================================================
 # Search & Filter
-# ==============================================================================
 elif step == "Search & Filter":
     st.header("Search & Filter")
 
@@ -511,9 +722,7 @@ elif step == "Search & Filter":
                 except Exception as e:
                     st.error(f"Filtering failed: {str(e)}")
 
-# ==============================================================================
 # Export
-# ==============================================================================
 elif step == "Export":
     st.header("Export Results")
 
