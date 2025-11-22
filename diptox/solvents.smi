@@ -1,4 +1,4 @@
-Propan-2-ol(IPA)    CC(C)O
+Propan-2-ol(IPA)	CC(C)O
 Dichloromethane(DCM)	ClCCl
 Acetone	CC(=O)C
 Trichloromethane	ClC(Cl)Cl
@@ -6,9 +6,9 @@ Dimethyl sulfoxide(DMSO)	CS(=O)C
 Ethyl acetate	CCOC(=O)C
 Ethanol	CCO
 Methanol	CO
-Tetrahydrofuran(THF)    C1CCOC1
-Acetonitrile(MeCN)  CC#N
-Dimethylformamide(DMF)  C(=O)N(C)C
-Hexane  CCCCCC
-Toluene Cc1ccccc1
-Diethyl ether   CCOCC
+Tetrahydrofuran(THF)	C1CCOC1
+Acetonitrile(MeCN)	CC#N
+Dimethylformamide(DMF)	C(=O)N(C)C
+Hexane	CCCCCC
+Toluene	Cc1ccccc1
+Diethyl ether	CCOCC
