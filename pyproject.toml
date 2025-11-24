@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "diptox"
-version = "1.2.2"
+version = "1.2.5"
 description = "Data Integration and Processing for Computational Toxicology"
 authors = [{name = "Guijia Bi", email = "gjbi@mail.dlut.edu.cn"}]
 license = {text = "Apache-2.0"}

@@ -6,6 +6,7 @@ from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
 from typing import Optional, Union
 import re
+import os
 
 # Default log configuration
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -39,8 +40,12 @@ class LogManager:
         if self._configured:
             return
 
+        if os.environ.get("DIPTOX_GUI_MODE") == "true":
+            enable_file = False
+
         log_dir = Path(log_dir) if log_dir else Path(DEFAULT_LOG_DIR)
-        log_dir.mkdir(parents=True, exist_ok=True)
+        if enable_file:
+            log_dir.mkdir(parents=True, exist_ok=True)
 
         # Basic log formatter
         formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
@@ -68,30 +73,29 @@ class LogManager:
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
 
-        # Separate handler for error logs (rotating by time)
-        error_handler = TimedRotatingFileHandler(
-            filename=log_dir / "DiPToxError.log",
-            when=when,
-            interval=interval,
-            backupCount=backup_count,
-            encoding="utf-8"
-        )
-        error_handler.setLevel(logging.WARNING)
-        error_handler.setFormatter(formatter)
-        root_logger.addHandler(error_handler)
+            # Separate handler for error logs (rotating by time)
+            error_handler = TimedRotatingFileHandler(
+                filename=log_dir / "DiPToxError.log",
+                when=when,
+                interval=interval,
+                backupCount=backup_count,
+                encoding="utf-8"
+            )
+            error_handler.setLevel(logging.WARNING)
+            error_handler.setFormatter(formatter)
+            root_logger.addHandler(error_handler)
+
+            self._setup_log_cleaner(
+                log_dir=log_dir,
+                retention_days=log_retention_days,
+                max_total=max_total_logs
+            )
 
         # Configure log level for third-party libraries
         logging.getLogger("urllib3").setLevel(logging.WARNING)
         logging.getLogger("requests").setLevel(logging.WARNING)
 
         self._configured = True
-
-        # Configuring log clearing
-        self._setup_log_cleaner(
-            log_dir=log_dir,
-            retention_days=log_retention_days,
-            max_total=max_total_logs
-        )
 
     def get_logger(self, name: Optional[str] = None) -> logging.Logger:
         """Retrieve a configured logger."""

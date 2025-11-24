@@ -10,6 +10,8 @@ from rdkit import RDLogger
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import logging
 from .logger import log_manager
 logger = log_manager.get_logger(__name__)
@@ -30,7 +32,19 @@ except ImportError:
 
 try:
     import ctxpy as ctx
-    _CTXPY_AVAILABLE = True
+    from importlib.metadata import version
+    from packaging.version import parse as parse_version
+
+    _current_ctx_version = version("ctx-python")
+
+    if parse_version(_current_ctx_version) >= parse_version("0.0.1a10"):
+        _CTXPY_AVAILABLE = True
+    else:
+        _CTXPY_AVAILABLE = False
+        logger.warning(
+            f"Detected 'ctx-python' version {_current_ctx_version}, "
+            f"which is older than the required 0.0.1a10. CompTox SDK mode disabled."
+        )
 except ImportError:
     _CTXPY_AVAILABLE = False
 
@@ -57,7 +71,8 @@ class WebService:
                  chemspider_api_key: Optional[str] = None,
                  comptox_api_key: Optional[str] = None,
                  cas_api_key: Optional[str] = None,
-                 force_api_mode: bool = False):
+                 force_api_mode: bool = False,
+                 status_callback: Optional[Callable[[str], None]] = None):
         """
         Initializes the WebService class
         :param sources: Data source interface
@@ -71,6 +86,7 @@ class WebService:
         :param comptox_api_key: Comptox API key.
         :param cas_api_key: CAS API key.
         :param force_api_mode: Forces API mode.
+        :param status_callback: Callback function for status checking.
         """
         if isinstance(sources, str):
             self.sources = [sources.lower()]
@@ -84,11 +100,22 @@ class WebService:
         self.rest_duration = rest_duration
         self.request_count = 0
         self._counter_lock = Lock()
+        self.status_callback = status_callback
         self._chemspider_api_key = chemspider_api_key
         self._comptox_api_key = comptox_api_key
         self._cas_api_key = cas_api_key
 
         self.session = requests.Session()
+        retry_strategy = Retry(
+            total=retries,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
@@ -126,9 +153,21 @@ class WebService:
         with self._counter_lock:
             self.request_count += 1
             if self.request_count >= self.batch_limit:
-                logger.info(f"The request limit ({self.batch_limit}) has been reached. Pausing for {self.rest_duration} seconds...")
-                time.sleep(self.rest_duration)
+                logger.info(f"Limit reached. Pausing for {self.rest_duration}s...")
+                for remaining in range(self.rest_duration, 0, -1):
+                    if self.status_callback:
+                        try:
+                            msg = f"API Rate Limit Reached. Cooling down: **{remaining}s** remaining..."
+                            self.status_callback(msg)
+                        except:
+                            pass
+                    time.sleep(1)
                 self.request_count = 0
+                if self.status_callback:
+                    try:
+                        self.status_callback("Cooldown finished. Resuming...")
+                    except:
+                        pass
 
     def get_properties_batch(self,
                              identifiers: List[str],
@@ -551,7 +590,7 @@ class WebService:
         comptox = ctx.Chemical(x_api_key=self._comptox_api_key)
 
         self._increment_request_count()
-        search_results = comptox.search(by='equals', word=search_identifier)
+        search_results = comptox.search(by='equals', query=search_identifier)
 
         if not search_results or not isinstance(search_results, list):
             return {}
@@ -561,9 +600,18 @@ class WebService:
             return {}
 
         self._increment_request_count()
-        detail = comptox.details(by='dtxsid', word=dtxsid)
-
+        detail_resp = comptox.details(by='dtxsid', query=dtxsid)
         result = {}
+        if isinstance(detail_resp, list):
+            if len(detail_resp) > 0:
+                detail = detail_resp[0]
+            else:
+                return {}
+        elif isinstance(detail_resp, dict):
+            detail = detail_resp
+        else:
+            return {}
+
         if 'smiles' in properties:
             result['smiles'] = detail.get('smiles')
         if 'iupac' in properties:

@@ -1,8 +1,13 @@
 # diptox/web_ui.py
+import os
+os.environ["DIPTOX_GUI_MODE"] = "true"
 import streamlit as st
 import pandas as pd
-import os
+import threading
+import time
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from diptox.core import DiptoxPipeline
+from diptox import user_reg
 
 st.set_page_config(
     page_title="DiPTox GUI",
@@ -20,6 +25,48 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
+if not user_reg.is_registered_or_skipped():
+    with st.expander("👋 DiPTox Community Check-in (Optional)", expanded=True):
+        st.markdown("""
+        <small>Hi! To help us understand our user base and improve DiPTox, we would appreciate it if you could share who you are.
+        This helps us with academic impact assessment. This is strictly optional.</small>
+        """, unsafe_allow_html=True)
+
+        with st.form("user_reg_form"):
+            col_u1, col_u2, col_u3 = st.columns(3)
+            reg_name = col_u1.text_input("Name")
+            reg_aff = col_u2.text_input("Affiliation")
+            reg_email = col_u3.text_input("Email")
+
+            # Button row
+            col_btn1, col_btn2 = st.columns([1, 5])
+            is_submit = col_btn1.form_submit_button("🚀 Submit", type="primary")
+
+        # Skip button outside the form
+        if st.button("Skip (Don't ask again)"):
+            user_reg.save_status("skipped")
+            st.rerun()
+
+        if is_submit:
+            if not reg_name or not reg_aff:
+                st.error("Please fill in at least Name and Affiliation.")
+            else:
+                with st.spinner("Sending..."):
+                    success, msg = user_reg.submit_info(reg_name, reg_aff, reg_email)
+                    if success:
+                        st.success(msg)
+                        import time
+
+                        time.sleep(1.5)
+                        st.rerun()
+                    else:
+                        st.warning(f"Note: {msg}")
+                        # Even if it fails, mark as registered to avoid annoying the user
+                        user_reg.save_status("registered_offline")
+                        time.sleep(2)
+                        st.rerun()
+    st.divider()
 
 # --- Session State ---
 if 'pipeline' not in st.session_state:
@@ -458,47 +505,46 @@ elif step == "Preprocessing":
 
         st.markdown("###")  # Spacer
         if st.button("🚀 Run Preprocessing", type="primary", width="stretch"):
-            progress_bar = st.progress(0.0)
-            status_text = st.empty()
-
+            progress_container = st.empty()
 
             def update_progress(current, total):
                 if total > 0:
-                    progress_bar.progress(min(current / total, 1.0))
-                    status_text.text(f"Processing: {current}/{total}")
+                    with progress_container.container():
+                        st.markdown("#### ⚙️ Processing molecules...")
+                        st.progress(min(current / total, 1.0))
+                        st.caption(f"Progress: {current}/{total}")
 
-
-            with st.spinner("Processing molecules..."):
-                try:
-                    pipeline.preprocess(
-                        remove_salts=rm_salts,
-                        remove_solvents=rm_solvs,
-                        remove_mixtures=rm_mixt,
-                        remove_inorganic=rm_inorg,
-                        neutralize=neu,
-                        reject_non_neutral=rej_non_neu,
-                        check_valid_atoms=chk_valid,
-                        strict_atom_check=strict,
-                        remove_stereo=rm_stereo,
-                        remove_isotopes=rm_iso,
-                        remove_hs=rm_hs,
-                        keep_largest_fragment=keep_large,
-                        hac_threshold=final_hac_threshold,
-                        sanitize=sanitize,
-                        reject_radical_species=rej_rad,
-                        progress_callback=update_progress
-                    )
-
-                    new_cols = ['Canonical SMILES', 'Is Valid', 'Processing Log']
-                    if calc_inchi:
-                        pipeline.calculate_inchi()
-                        new_cols.append('InChI')
-
-                    update_highlights(new_cols)
-                    update_preview()
-                    st.success("Preprocessing complete!")
-                except Exception as e:
-                    st.error(f"Preprocessing failed: {str(e)}")
+            try:
+                update_progress(0, 100)
+                pipeline.preprocess(
+                    remove_salts=rm_salts,
+                    remove_solvents=rm_solvs,
+                    remove_mixtures=rm_mixt,
+                    remove_inorganic=rm_inorg,
+                    neutralize=neu,
+                    reject_non_neutral=rej_non_neu,
+                    check_valid_atoms=chk_valid,
+                    strict_atom_check=strict,
+                    remove_stereo=rm_stereo,
+                    remove_isotopes=rm_iso,
+                    remove_hs=rm_hs,
+                    keep_largest_fragment=keep_large,
+                    hac_threshold=final_hac_threshold,
+                    sanitize=sanitize,
+                    reject_radical_species=rej_rad,
+                    progress_callback=update_progress
+                )
+                new_cols = ['Canonical SMILES', 'Is Valid', 'Processing Log']
+                if calc_inchi:
+                    pipeline.calculate_inchi()
+                    new_cols.append('InChI')
+                update_highlights(new_cols)
+                update_preview()
+                st.success("Preprocessing complete!")
+            except Exception as e:
+                st.error(f"Preprocessing failed: {str(e)}")
+            finally:
+                progress_container.empty()
 
 # Web Requests
 elif step == "Web Requests":
@@ -572,10 +618,14 @@ elif step == "Web Requests":
                                               help="Pause execution after X requests to rest (0 = no limit).")
             rest_duration = c_adv5.number_input("Rest Duration (s)", value=300, min_value=0,
                                                 help="Time to pause (in seconds) when batch limit is reached.")
-            with c_adv6:
-                st.markdown("Force API Mode",
-                            help="ON: Bypass SDKs (like PubChemPy) and force raw API calls.\nOFF: Use SDKs when available (Recommended).")
-                force_api = st.toggle("Force API Mode", value=False, label_visibility="collapsed")
+            mode_selection = c_adv6.selectbox(
+                "API Mode Strategy",
+                options=["Auto (SDK)", "Force API"],
+                index=0,
+                help="Auto: Use official SDKs (Faster/Stable).\nForce API: Bypass SDKs, use raw HTTP requests."
+            )
+
+            force_api = True if mode_selection == "Force API" else False
 
         if st.button("Start Web Request", type="primary"):
             if not sources:
@@ -583,17 +633,28 @@ elif step == "Web Requests":
             elif not send_type:
                 st.error("Please select at least one input identifier type.")
             else:
-                progress_bar = st.progress(0.0)
-                status_text = st.empty()
-
+                main_ctx = get_script_run_ctx()
+                progress_container = st.empty()
 
                 def update_progress(current, total):
+                    if main_ctx:
+                        add_script_run_ctx(threading.current_thread(), main_ctx)
+
                     if total > 0:
                         percent = min(current / total, 1.0)
-                        progress_bar.progress(percent)
-                        status_text.text(f"Querying batch: {current}/{total}")
-                with st.spinner(f"Querying... This may take a while. (Check terminal for logs)"):
-                    try:
+                        with progress_container.container():
+                            st.progress(percent)
+                            st.caption(f"Querying batch: {current}/{total}")
+
+                def update_status(message):
+                    if main_ctx:
+                        add_script_run_ctx(threading.current_thread(), main_ctx)
+
+                    with progress_container.container():
+                        st.warning(message, icon="⏳")
+
+                try:
+                    with st.spinner(f"Querying... (Check terminal for logs)"):
                         pipeline.config_web_request(
                             sources=sources,
                             chemspider_api_key=chemspider_key,
@@ -605,7 +666,8 @@ elif step == "Web Requests":
                             delay=retry_delay,
                             batch_limit=batch_limit,
                             rest_duration=rest_duration,
-                            force_api_mode=force_api
+                            force_api_mode=force_api,
+                            status_callback=update_status
                         )
                         pipeline.web_request(send=send_type, request=req_types, progress_callback=update_progress)
                         new_web_cols = [f"{prop}_from_web" for prop in req_types]
@@ -613,8 +675,10 @@ elif step == "Web Requests":
                         update_highlights(new_web_cols)
                         update_preview()
                         st.success("Web request finished.")
-                    except Exception as e:
-                        st.error(f"Web request failed: {str(e)}")
+                except Exception as e:
+                    st.error(f"Web request failed: {str(e)}")
+                finally:
+                    progress_container.empty()
 
 # Deduplication
 elif step == "Deduplication":
@@ -641,14 +705,14 @@ elif step == "Deduplication":
                 priority_list = [x.strip() for x in priority_input.split(",") if x.strip()]
 
         if st.button("Run Deduplication", type="primary"):
-            progress_bar = st.progress(0.0)
-            status_text = st.empty()
+            progress_container = st.empty()
 
             def update_progress(current, total):
                 if total > 0:
-                    percent = min(current / total, 1.0)
-                    progress_bar.progress(percent)
-                    status_text.text(f"Processing Groups: {current}/{total}")
+                    with progress_container.container():
+                        st.progress(min(current / total, 1.0))
+                        st.caption(f"Processing Groups: {current}/{total}")
+
             try:
                 pipeline.config_deduplicator(
                     condition_cols=condition_cols if condition_cols else None,
@@ -665,6 +729,8 @@ elif step == "Deduplication":
                 st.success("Deduplication complete.")
             except Exception as e:
                 st.error(f"Deduplication failed: {str(e)}")
+            finally:
+                progress_container.empty()
 
 # Search & Filter
 elif step == "Search & Filter":

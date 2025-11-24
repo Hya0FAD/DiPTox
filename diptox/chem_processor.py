@@ -2,7 +2,7 @@
 from contextlib import redirect_stderr
 from importlib import resources
 import io
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem, SaltRemover, rdmolops
 from typing import List, Tuple, Optional, Callable
 from .logger import log_manager
@@ -121,19 +121,18 @@ class ChemistryProcessor:
         :param product: SMILES string for the product.
         """
         try:
+            if not reactant or not product: return False
             patt = Chem.MolFromSmarts(reactant)
             if not patt:
                 logger.warning(f"Invalid SMARTS pattern: {reactant}")
-                return
-
+                return False
             repl = Chem.MolFromSmiles(product, sanitize=False)
             if not repl:
                 logger.warning(f"Invalid SMILES string: {product}")
-                return
-
+                return False
         except Exception as e:
             logger.error("Rule validation error", exc_info=True)
-            return
+            return False
 
         for existing_reactant, existing_product in self._neutralization_rules:
             if existing_reactant == reactant:
@@ -144,13 +143,15 @@ class ChemistryProcessor:
                     self.remove_neutralization_rule(reactant)
                     self._neutralization_rules.append((reactant, product))
                     logger.info(f"Rule updated: {reactant} -> {product}")
-                    return
+                    return True
                 else:
                     logger.info(f"Rule already exists, no need to add: {reactant} -> {product}")
-                    return
+                    return True
 
         self._neutralization_rules.append((reactant, product))
         logger.info(f"New rule added: {reactant} -> {product}")
+
+        return True
 
     def remove_neutralization_rule(self, reactant: str):
         """Remove a matching rule from the neutralization rule list."""
@@ -160,26 +161,33 @@ class ChemistryProcessor:
         ]
         if len(self._neutralization_rules) < initial_len:
             logger.info(f"Rule removed: {reactant}")
+            return True
         else:
             logger.warning(f"No matching rule found: {reactant}")
+            return False
 
     def add_effective_atom(self, atom):
         """Add a new atom symbol to the list of valid atoms."""
-        if isinstance(atom, str):
-            self._valid.add(atom)
-        else:
-            logger.info(f"Invalid atom format: {atom}. It should be a string representing an atom symbol.")
+        if not isinstance(atom, str):
+            return False
+        try:
+            if Chem.MolFromSmiles(f"[{atom}]") is None:
+                logger.warning(f"Invalid atom symbol: {atom}")
+                return False
+        except:
+            return False
+
+        self._valid.add(atom)
+        return True
 
     def delete_effective_atom(self, atom):
         """Remove an atom symbol from the list of valid atoms."""
-        if isinstance(atom, str):
-            if atom in self._valid:
-                self._valid.remove(atom)
-                logger.info(f"Atom {atom} has been removed from valid atoms.")
-            else:
-                logger.info(f"Atom {atom} is not in the valid atoms list. No changes made.")
-        else:
-            logger.info(f"Invalid atom format: {atom}. It should be a string representing an atom symbol.")
+        if atom in self._valid:
+            self._valid.remove(atom)
+            logger.info(f"Atom {atom} has been removed.")
+            return True
+        logger.info(f"Atom {atom} not found.")
+        return False
 
     def add_default_salt(self, smarts: str):
         mol = Chem.MolFromSmarts(smarts)
@@ -192,14 +200,16 @@ class ChemistryProcessor:
             if canon_smiles not in existing_smiles:
                 self._custom_salts.append(mol)
                 logger.info(f"Default salt added: {smarts}")
+            return True
         else:
             logger.warning(f"Invalid SMILES: {smarts}")
+            return False
 
     def remove_default_salt(self, smarts: str):
         target = Chem.MolFromSmarts(smarts)
         if not target:
             logger.warning(f"Invalid SMILES: {smarts}")
-            return
+            return False
         target_smiles = Chem.MolToSmiles(target, isomericSmiles=True, canonical=True)
         existing_smiles = {
             Chem.MolToSmiles(m, isomericSmiles=True, canonical=True)
@@ -208,6 +218,7 @@ class ChemistryProcessor:
         if target_smiles not in existing_smiles:
             self._removed_salts.append(target)
             logger.info(f"Default salt removed globally: {smarts}")
+        return True
 
     def add_default_solvents(self, smarts: str):
         mol = Chem.MolFromSmarts(smarts)
@@ -220,14 +231,16 @@ class ChemistryProcessor:
             if canon_smiles not in existing_smiles:
                 self._custom_solvents.append(mol)
                 logger.info(f"Default solvent added: {smarts}")
+                return True
         else:
             logger.warning(f"Invalid SMILES: {smarts}")
+            return False
 
     def remove_default_solvents(self, smarts: str):
         target = Chem.MolFromSmarts(smarts)
         if not target:
             logger.warning(f"Invalid SMILES: {smarts}")
-            return
+            return False
         target_smiles = Chem.MolToSmiles(target, isomericSmiles=True, canonical=True)
         existing_smiles = {
             Chem.MolToSmiles(m, isomericSmiles=True, canonical=True)
@@ -236,17 +249,23 @@ class ChemistryProcessor:
         if target_smiles not in existing_smiles:
             self._removed_solvents.append(target)
             logger.info(f"Default solvent removed globally: {smarts}")
+        return True
 
     @staticmethod
     def mol_to_inchi(mol: Chem.Mol) -> Optional[str]:
         """Convert a molecule to InChI string using RDKit locally."""
         if mol is None:
             return None
+        lg = RDLogger.logger()
         try:
-            return Chem.MolToInchi(mol)
+            lg.setLevel(RDLogger.CRITICAL)
+            inchi = Chem.MolToInchi(mol)
+            return inchi
         except Exception as e:
             logger.warning(f"Failed to generate InChI: {str(e)}")
             return None
+        finally:
+            lg.setLevel(RDLogger.INFO)
 
     @staticmethod
     def CombineFragments(fragments: list[Chem.Mol]) -> Chem.Mol:
@@ -483,20 +502,6 @@ class ChemistryProcessor:
                 f"Sanitization failed for {original_smiles} after removing atoms: {e}. Molecule rejected."
             )
             return None
-
-        # try:
-        #     elements = [atom.GetSymbol() for atom in mol.GetAtoms()]
-        #     if all(atom in self._valid for atom in elements):
-        #         return mol
-        #     else:
-        #         invalid_atoms = set(elements) - self._valid
-        #         logger.error(
-        #             f"Invalid atoms detected: {invalid_atoms} "
-        #             f"in molecule {Chem.MolToSmiles(mol)}"
-        #         )
-        # except Exception as e:
-        #     logger.exception("Atom validation failed")
-        #     return None
 
     def display_current_rules(self) -> None:
         """Prints a summary of the currently active chemical processing rules."""

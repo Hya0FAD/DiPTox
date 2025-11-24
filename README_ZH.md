@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.2.2-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.2.5-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">

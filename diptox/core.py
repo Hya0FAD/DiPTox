@@ -1,4 +1,5 @@
 # diptox/core.py
+import os
 import pandas as pd
 from typing import Optional, List, Union, Tuple, Callable, Dict
 from functools import partial, wraps
@@ -12,6 +13,7 @@ from .data_deduplicator import DataDeduplicator
 from .substructure_search import SubstructureSearcher
 from .logger import log_manager
 logger = log_manager.get_logger(__name__)
+from diptox import user_reg
 
 
 def check_data_loaded(func):
@@ -27,6 +29,7 @@ class DiptoxPipeline:
     """Main processing class that coordinates various modules."""
 
     def __init__(self):
+        self._check_initial_registration()
         self.chem_processor = ChemistryProcessor()
         self.data_handler = DataHandler()
 
@@ -42,6 +45,45 @@ class DiptoxPipeline:
         self.web_service = None
         self._preprocess_key = 0
         self.web_source = None
+
+    def _check_initial_registration(self):
+        """
+        Check if user info is registered.
+        Only triggers in interactive terminal mode AND not in GUI mode.
+        """
+        if os.environ.get("DIPTOX_GUI_MODE") == "true":
+            return
+
+        if user_reg.is_registered_or_skipped():
+            return
+
+        try:
+            print("=" * 60)
+            print("👋 Welcome to DiPTox!")
+            print("To help us improve, we'd love to know who is using this tool.")
+            print("This is OPTIONAL. You can skip by pressing Enter directly.")
+            print("=" * 60)
+
+            name = input("Enter your Name (or press Enter to skip): ").strip()
+            if not name:
+                print("Skipping registration. You won't be asked again.")
+                user_reg.save_status("skipped")
+                print("=" * 60)
+                return
+
+            affiliation = input("Enter your Affiliation/Unit: ").strip()
+            email = input("Enter your Email (optional): ").strip()
+
+            print("Sending information...", end=" ")
+            success, msg = user_reg.submit_info(name, affiliation, email)
+            if success:
+                print("Done! Thank you.")
+            else:
+                print(f"(Note: {msg})")
+            print("=" * 60 + "\n")
+
+        except (EOFError, OSError):
+            pass
 
     def load_data(self,
                   input_data: Union[str, List[str], pd.DataFrame],
@@ -346,7 +388,8 @@ class DiptoxPipeline:
                            chemspider_api_key: Optional[str] = None,
                            comptox_api_key: Optional[str] = None,
                            cas_api_key: Optional[str] = None,
-                           force_api_mode: bool = False) -> None:
+                           force_api_mode: bool = False,
+                           status_callback: Optional[Callable[[str], None]] = None) -> None:
         """
         Initializes the WebService class
         :param sources: Data source interface
@@ -360,12 +403,14 @@ class DiptoxPipeline:
         :param comptox_api_key: Comptox API key.
         :param cas_api_key: CAS API key.
         :param force_api_mode: Force API mode.
+        :param status_callback: Callback function for status checking.
         """
         self.web_source = sources
         self.web_service = WebService(sources=sources, interval=interval, retries=retries, delay=delay,
                                       max_workers=max_workers, batch_limit=batch_limit, rest_duration=rest_duration,
                                       chemspider_api_key=chemspider_api_key, comptox_api_key=comptox_api_key,
-                                      cas_api_key=cas_api_key,force_api_mode=force_api_mode)
+                                      cas_api_key=cas_api_key, force_api_mode=force_api_mode,
+                                      status_callback=status_callback)
 
     @check_data_loaded
     def web_request(self, send: Union[str, List[str]], request: Union[str, List[str]],
@@ -443,8 +488,10 @@ class DiptoxPipeline:
                     if any(res.get(prop) for prop in request_set):
                         for prop in request_set:
                             col = f'{prop}_from_web'
-                            if res.get(prop) and pd.isna(self.df.at[original_index, col]):
-                                self.df.at[original_index, col] = res[prop]
+                            val = res.get(prop)
+
+                            if val is not None and pd.isna(self.df.at[original_index, col]):
+                                self.df.at[original_index, col] = str(val)
 
                         self.df.at[original_index, 'Data_Source'] = res.get('Data_Source')
                         self.df.at[original_index, 'Query_Method'] = id_type
@@ -567,41 +614,53 @@ class DiptoxPipeline:
         :param reactant: SMARTS string for the reactant.
         :param product: SMILES string for the product.
         """
-        self.chem_processor.add_neutralization_rule(reactant, product)
+        return self.chem_processor.add_neutralization_rule(reactant, product)
 
     def remove_neutralization_rule(self, reactant: str) -> None:
         """
         Remove a charge neutralization rule.
         :param reactant: SMARTS string for the reactant.
         """
-        self.chem_processor.remove_neutralization_rule(reactant)
+        return self.chem_processor.remove_neutralization_rule(reactant)
 
-    def manage_atom_rules(self, atoms: Union[str, List[str]], add: bool = True) -> None:
+    def manage_atom_rules(self, atoms: Union[str, List[str]], add: bool = True) -> List[str]:
         """Manage atom validation rules."""
         atom_list = [atoms] if isinstance(atoms, str) else atoms
+        failed = []
         for atom in atom_list:
             if add:
-                self.chem_processor.add_effective_atom(atom)
+                success = self.chem_processor.add_effective_atom(atom)
             else:
-                self.chem_processor.delete_effective_atom(atom)
+                success = self.chem_processor.delete_effective_atom(atom)
+            if not success:
+                failed.append(atom)
+        return failed
 
-    def manage_default_salt(self, salts: Union[str, List[str]], add: bool = True) -> None:
+    def manage_default_salt(self, salts: Union[str, List[str]], add: bool = True) -> List[str]:
         """Manage salt validation rules."""
         salt_list = [salts] if isinstance(salts, str) else salts
+        failed = []
         for salt in salt_list:
             if add:
-                self.chem_processor.add_default_salt(salt)
+                success = self.chem_processor.add_default_salt(salt)
             else:
-                self.chem_processor.remove_default_salt(salt)
+                success = self.chem_processor.remove_default_salt(salt)
+            if not success:
+                failed.append(salt)
+        return failed
 
-    def manage_default_solvent(self, solvents: Union[str, List[str]], add: bool = True) -> None:
+    def manage_default_solvent(self, solvents: Union[str, List[str]], add: bool = True) -> List[str]:
         """Manage solvent validation rules."""
         solvent_list = [solvents] if isinstance(solvents, str) else solvents
+        failed = []
         for solvent in solvent_list:
             if add:
-                self.chem_processor.add_default_solvents(solvent)
+                success = self.chem_processor.add_default_solvents(solvent)
             else:
-                self.chem_processor.remove_default_solvents(solvent)
+                success = self.chem_processor.remove_default_solvents(solvent)
+            if not success:
+                failed.append(solvent)
+        return failed
 
     def display_processing_rules(self) -> None:
         """
