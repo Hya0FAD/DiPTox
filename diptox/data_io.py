@@ -53,6 +53,7 @@ class DataHandler:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File does not exist: {file_path}")
 
+        df = None
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path, **kwargs)
         elif file_path.endswith(('.xls', '.xlsx')):
@@ -91,6 +92,15 @@ class DataHandler:
             df = DataHandler._load_smi(file_path=file_path, smiles_col=smiles_col, id_col=id_col, **kwargs)
         else:
             logger.error("Only the .csv/.xlsx/.xls/.txt file format is supported")
+            raise ValueError("Unsupported file format")
+
+        if df is None:
+            raise ValueError("Failed to load data into DataFrame.")
+
+        for col in df.select_dtypes(include=['object']).columns:
+            numeric_col = pd.to_numeric(df[col], errors='coerce')
+            if numeric_col.isnull().sum() > 0 and df[col].notnull().sum() > 0:
+                df[col] = df[col].astype("string")
 
         if smiles_col is not None and smiles_col not in df.columns:
             logger.error(f"SMILES column '{smiles_col}' does not exist in the file")

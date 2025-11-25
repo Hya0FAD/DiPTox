@@ -1,6 +1,6 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.2.5-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.2.6-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
@@ -8,6 +8,15 @@
 
 ## New in v1.2: Interactive GUI
 DiPTox now includes a user-friendly **Graphical User Interface (GUI)** powered by Streamlit. This allows users to perform data loading, preprocessing, web retrieval, and deduplication through a visual web interface without writing any code.
+-   **Visual Operation**: Complete workflow control via a web browser.
+-   **Real-time Preview**: Instantly view data changes after applying rules.
+-   **Rule Management**: Add/Remove valid atoms, salts, and solvents interactively.
+-   **Updated Web Connectors**: Interfaces for **PubChem, CAS Common Chemistry, and the CompTox Dashboard** have been updated to align with their latest API specifications, ensuring reliable data retrieval.
+
+#### DiPTox Community Check-in (Optional)
+To help us understand our user base and improve the software, DiPTox includes a one-time, optional survey on first use. 
+-   **Completely Optional**: You can skip it with a single click.
+-   **Privacy-Focused**: The information helps us with academic impact assessment and grant applications. It will not be shared.
 
 ## Core Features
 
@@ -143,9 +152,9 @@ DP.config_web_request(
   - `scipy`
   - `streamlit>=1.0.0` (Required for GUI)
 - Optional Dependencies (install as needed, if not installed, then send the request using `requests`.):
-  - `pubchempy>=1.0.4`: For PubChem integration
+  - `pubchempy>=1.0.5`: For PubChem integration
   - `chemspipy>=2.0.0`: For ChemSpider (requires API key)
-  - `ctx-python>=0.0.1a7`: For CompTox Dashboard (requires API key)
+  - `ctx-python>=0.0.1a10`: For CompTox Dashboard (requires API key)
 
 ## License
 Apache License 2.0 - See [LICENSE](LICENSE) for details

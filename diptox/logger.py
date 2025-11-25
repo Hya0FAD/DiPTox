@@ -11,7 +11,7 @@ import os
 # Default log configuration
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-DEFAULT_LOG_DIR = "logs"
+DEFAULT_LOG_DIR = "DiPTox-Logs"
 DEFAULT_LOG_LEVEL = logging.INFO
 
 
@@ -37,8 +37,10 @@ class LogManager:
         max_total_logs: Optional[int] = 5
     ):
         """Global log configuration method."""
-        if self._configured:
-            return
+        root_logger = logging.getLogger()
+
+        if root_logger.hasHandlers():
+            root_logger.handlers.clear()
 
         if os.environ.get("DIPTOX_GUI_MODE") == "true":
             enable_file = False

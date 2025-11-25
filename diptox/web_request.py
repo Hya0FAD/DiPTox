@@ -324,22 +324,65 @@ class WebService:
         if id_type not in id_type_map:
             return {}
         self._increment_request_count()
-        compounds = pubchempy.get_compounds(identifier, id_type_map[id_type])
+        current_version = pubchempy.__version__
         result = {}
-        if compounds:
-            c = compounds[0]
-            if 'smiles' in properties:
-                result['smiles'] = c.canonical_smiles
-            if 'iupac' in properties:
-                result['iupac'] = c.iupac_name
-            if 'mw' in properties:
-                result['mw'] = c.molecular_weight
-            if c.synonyms is not None:
-                if 'cas' in properties:
-                    result['cas'] = next((syn for syn in c.synonyms if self._validate_and_clean_cas(syn)), None)
-                if 'name' in properties and c.synonyms:
-                    result['name'] = c.synonyms[0]
-        return result
+
+        if parse_version(current_version) < parse_version("1.0.5"):
+            if not hasattr(self, '_pubchem_version_warned'):
+                logger.warning(
+                    f"Detected PubChemPy version {current_version}. "
+                    f"It is strongly recommended to update to v1.0.5+ (`pip install pubchempy --upgrade`) "
+                    f"to resolve potential data retrieval issues."
+                )
+                self._pubchem_version_warned = True
+
+            compounds = pubchempy.get_compounds(identifier, id_type_map[id_type])
+            result = {}
+            if compounds:
+                c = compounds[0]
+                if 'smiles' in properties:
+                    result['smiles'] = getattr(c, 'canonical_smiles', None) or getattr(c, 'isomeric_smiles', None)
+                if 'iupac' in properties:
+                    result['iupac'] = getattr(c, 'iupac_name', None) or getattr(c, 'preferred_iupac_name', None)
+                if 'mw' in properties:
+                    result['mw'] = c.molecular_weight
+                if c.synonyms is not None:
+                    if 'cas' in properties:
+                        result['cas'] = next((syn for syn in c.synonyms if self._validate_and_clean_cas(syn)), None)
+                    if 'name' in properties and c.synonyms:
+                        result['name'] = c.synonyms[0]
+            return result
+
+        else:
+            try:
+                compounds = pubchempy.get_compounds(identifier, id_type_map[id_type])
+                if compounds:
+                    c = compounds[0]
+                    if 'smiles' in properties:
+                        val = getattr(c, 'smiles', None)
+                        if not val:
+                            val = getattr(c, 'connectivity_smiles', None)
+                        result['smiles'] = val
+
+                    if 'iupac' in properties:
+                        result['iupac'] = getattr(c, 'iupac_name', None)
+
+                    if 'mw' in properties:
+                        result['mw'] = getattr(c, 'molecular_weight', None)
+
+                    if 'cas' in properties or 'name' in properties:
+                        syns = c.synonyms
+                        if syns:
+                            if 'name' in properties:
+                                result['name'] = syns[0]
+                            if 'cas' in properties:
+                                result['cas'] = next((syn for syn in syns if self._validate_and_clean_cas(syn)), None)
+
+            except Exception as e:
+                logger.warning(f"PubChem SDK (v{current_version}) error for {identifier}: {e}")
+                return {}
+
+            return result
 
     def _fetch_via_pubchem_api(self,
                                identifier: str,
@@ -760,59 +803,65 @@ class WebService:
                            id_type: str) -> Dict[str, Optional[str]]:
         if not self._cas_api_key:
             raise ValueError("CAS Common Chemistry API requires an API key.")
-        if id_type == 'smiles':
-            identifier = self._get_inchi_from_smiles(identifier)
-            if not identifier:
-                return {}
-        elif id_type not in ['cas', 'name']:
+        if id_type not in ['smiles', 'cas', 'name']:
             return {}
         base_url = "https://commonchemistry.cas.org/api"
         headers = {
-            'Authorization': self._cas_api_key
+            'X-Api-Key': self._cas_api_key
         }
         search_url = f"{base_url}/search"
         params = {'q': identifier}
 
         self._increment_request_count()
-        search_response = self.session.get(search_url, params=params, headers=headers, timeout=15)
+        try:
+            search_response = self.session.get(search_url, params=params, headers=headers, timeout=15)
+            if search_response.status_code == 404:
+                return {}
+            search_response.raise_for_status()
 
-        if search_response.status_code == 404:
-            return {}
-        search_response.raise_for_status()
+            search_data = search_response.json()
+            if not search_data.get('count', 0) > 0 or not search_data.get('results'):
+                return {}
 
-        search_data = search_response.json()
-        if not search_data.get('results'):
-            return {}
+            first_result = search_data['results'][0]
+            cas_rn = first_result.get('rn')
+            if not cas_rn:
+                return {}
 
-        cas_rn = search_data['results'][0].get('rn')
-        if not cas_rn:
-            return {}
+            detail_url = f"{base_url}/detail"
+            detail_params = {'cas_rn': cas_rn}
 
-        detail_url = f"{base_url}/detail"
-        params = {'cas_rn': cas_rn}
+            self._increment_request_count()
+            detail_response = self.session.get(detail_url, params=detail_params, headers=headers, timeout=15)
 
-        self._increment_request_count()
-        detail_response = self.session.get(detail_url, params=params, timeout=15)
+            if detail_response.status_code == 404:
+                return {}
+            detail_response.raise_for_status()
 
-        if detail_response.status_code == 404:
-            return {}
-        detail_response.raise_for_status()
+            detail_data = detail_response.json()
+            if not detail_data:
+                return {}
 
-        detail_data = detail_response.json()
-        if not detail_data:
-            return {}
+            result = {}
+            if 'smiles' in properties:
+                result['smiles'] = detail_data.get('canonicalSmile') or detail_data.get('smile')
 
-        result = {}
-        if 'smiles' in properties:
-            result['smiles'] = detail_data.get('canonicalSmile') or detail_data.get('smile')
-        if 'mw' in properties:
-            result['mw'] = detail_data.get('molecularMass')
-        if 'cas' in properties:
-            result['cas'] = detail_data.get('rn')
-        if 'name' in properties:
-            if synonyms := detail_data.get('synonyms'):
-                result['name'] = synonyms[0]
-            else:
+            if 'mw' in properties:
+                result['mw'] = detail_data.get('molecularMass')
+
+            if 'cas' in properties:
+                result['cas'] = detail_data.get('rn')
+
+            if 'name' in properties:
                 result['name'] = detail_data.get('name')
+                if not result['name'] and detail_data.get('synonyms'):
+                    result['name'] = detail_data['synonyms'][0]
 
-        return result
+            return result
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"CAS API request failed for '{identifier}': {e}")
+            return {}
+        except Exception as e:
+            logger.warning(f"CAS API processing error for '{identifier}': {e}")
+            return {}

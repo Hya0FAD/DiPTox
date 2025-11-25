@@ -18,7 +18,7 @@
 # - ctx-python (for CompTox integration)
 # - chemspipy (for ChemSpider integration)
 
-# Latest Version: 1.2.5 (2025.11.24)
+# Latest Version: 1.2.6 (2025.11.25)
 
 
 # ==============================================================================

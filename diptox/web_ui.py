@@ -15,16 +15,85 @@ st.set_page_config(
     layout="wide"
 )
 
-st.markdown(
-    """
-    <style>
-    .stAppDeployButton {
-        visibility: hidden;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+
+def inject_custom_css():
+    st.markdown(
+        """
+        <style>
+        .stMultiSelect [data-baseweb="tag"] {
+            background-color: #0078D4 !important; 
+            color: white !important;
+        }
+        .stCheckbox input:checked + div[data-baseweb="checkbox"] {
+            background-color: #0078D4 !important;
+            border-color: #0078D4 !important;
+        }
+        .stSelectbox div[data-baseweb="select"] div[aria-selected="true"] {
+            color: #0078D4;
+        }
+        .stAppDeployButton {
+            visibility: hidden;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+inject_custom_css()
+
+# --- Session State ---
+if 'pipeline' not in st.session_state:
+    st.session_state.pipeline = DiptoxPipeline()
+if 'df_preview' not in st.session_state:
+    st.session_state.df_preview = None
+if 'rule_logs' not in st.session_state:
+    st.session_state.rule_logs = []
+if 'user_cols' not in st.session_state:
+    st.session_state.user_cols = set()
+if 'gen_cols' not in st.session_state:
+    st.session_state.gen_cols = set()
+if 'export_data' not in st.session_state:
+    st.session_state.export_data = None
+if 'export_fname' not in st.session_state:
+    st.session_state.export_fname = None
+
+pipeline = st.session_state.pipeline
+
+
+def track_user_cols(cols):
+    if not cols:
+        return
+    if isinstance(cols, str):
+        cols = [cols]
+    st.session_state.user_cols.update([c for c in cols if c])
+
+
+def track_gen_cols(cols):
+    if not cols:
+        return
+    if isinstance(cols, str):
+        cols = [cols]
+    st.session_state.gen_cols.update([c for c in cols if c])
+
+
+# --- Side bar navigation ---
+st.sidebar.title("DiPTox Control Panel")
+step = st.sidebar.radio("Go to Step:",
+                        ["Data Loading", "Preprocessing", "Web Requests", "Deduplication", "Search & Filter", "Export"])
+
+
+def update_preview():
+    if pipeline.df is not None:
+        st.session_state.df_preview = pipeline.df
+    else:
+        st.session_state.df_preview = None
+
+
+def add_rule_log(message):
+    st.session_state.rule_logs.append(message)
+    st.toast(message, icon="✅")
+
 
 if not user_reg.is_registered_or_skipped():
     with st.expander("👋 DiPTox Community Check-in (Optional)", expanded=True):
@@ -67,52 +136,6 @@ if not user_reg.is_registered_or_skipped():
                         time.sleep(2)
                         st.rerun()
     st.divider()
-
-# --- Session State ---
-if 'pipeline' not in st.session_state:
-    st.session_state.pipeline = DiptoxPipeline()
-if 'df_preview' not in st.session_state:
-    st.session_state.df_preview = None
-if 'rule_logs' not in st.session_state:
-    st.session_state.rule_logs = []
-if 'highlight_cols' not in st.session_state:
-    st.session_state.highlight_cols = []
-
-pipeline = st.session_state.pipeline
-
-
-def update_highlights(new_cols):
-    """Helper to append new columns to the highlight list without duplicates."""
-    if 'highlight_cols' not in st.session_state:
-        st.session_state.highlight_cols = []
-
-    if isinstance(new_cols, str):
-        new_cols = [new_cols]
-
-    current = set(st.session_state.highlight_cols)
-    for col in new_cols:
-        if col:
-            current.add(col)
-    st.session_state.highlight_cols = list(current)
-
-
-# --- Side bar navigation ---
-st.sidebar.title("DiPTox Control Panel")
-step = st.sidebar.radio("Go to Step:",
-                        ["Data Loading", "Preprocessing", "Web Requests", "Deduplication", "Search & Filter", "Export"])
-
-
-# --- Auxiliary function ---
-def update_preview():
-    if pipeline.df is not None:
-        st.session_state.df_preview = pipeline.df
-    else:
-        st.session_state.df_preview = None
-
-
-def add_rule_log(message):
-    st.session_state.rule_logs.append(message)
-    st.toast(message, icon="✅")
 
 
 # Data Loading
@@ -224,8 +247,10 @@ if step == "Data Loading":
                         kwargs['sheet_name'] = selected_sheet
 
                     def clean_col_name(val):
-                        if val == "(None)": return None
-                        if isinstance(val, str) and val.strip() == "": return None
+                        if val == "(None)":
+                            return None
+                        if isinstance(val, str) and val.strip() == "":
+                            return None
                         return val
 
                     final_smiles = clean_col_name(smiles_col)
@@ -244,10 +269,7 @@ if step == "Data Loading":
                         **kwargs
                     )
 
-                    st.session_state.highlight_cols = [
-                        c for c in [final_smiles, final_target, final_cas, final_name, final_id]
-                        if c is not None
-                    ]
+                    track_user_cols([final_smiles, final_target, final_cas, final_name, final_id])
 
                     update_preview()
                     st.success(f"Successfully loaded {len(pipeline.df)} records!")
@@ -286,7 +308,7 @@ if step == "Data Loading":
                             smiles_col=custom_smiles_col
                         )
 
-                        st.session_state.highlight_cols = [custom_smiles_col]
+                        track_user_cols(custom_smiles_col)
 
                         update_preview()
                         st.success(f"Successfully loaded {len(pipeline.df)} SMILES!")
@@ -355,7 +377,6 @@ elif step == "Preprocessing":
                     st.error("Empty input")
                 else:
                     salts = [x.strip() for x in salt_input.split(',') if x.strip()]
-                    # 这里 remove 我们在 chem_processor 做了宽容处理，一般不返回 failed
                     pipeline.manage_default_salt(salts=salts, add=False)
                     add_rule_log(f"Removed salt: {salt_input}")
                     st.rerun()
@@ -501,10 +522,9 @@ elif step == "Preprocessing":
         # --- C. Post-Processing ---
         st.markdown("### C. Post-Processing")
         with st.container(border=True):
-            calc_inchi = st.checkbox("Calculate InChI", value=True, help="Generate InChI strings after processing.")
+            calc_inchi = st.checkbox("Calculate InChI", value=False, help="Generate InChI strings after processing.")
 
-        st.markdown("###")  # Spacer
-        if st.button("🚀 Run Preprocessing", type="primary", width="stretch"):
+        if st.button("🚀 Run Preprocessing", type="primary"):
             progress_container = st.empty()
 
             def update_progress(current, total):
@@ -538,7 +558,7 @@ elif step == "Preprocessing":
                 if calc_inchi:
                     pipeline.calculate_inchi()
                     new_cols.append('InChI')
-                update_highlights(new_cols)
+                track_gen_cols(new_cols)
                 update_preview()
                 st.success("Preprocessing complete!")
             except Exception as e:
@@ -571,15 +591,11 @@ elif step == "Web Requests":
             else:
                 st.caption("⚠️ No source selected")
 
-            send_type = st.multiselect(
-                "Send Identifier Input (Priority Order)",
-                ["smiles", "cas", "name"],
-                default=["smiles"]
+            req_types = st.multiselect(
+                "Request Properties (Output)",
+                ["smiles", "cas", "name", "iupac", "mw"],
+                default=["cas", "iupac"]
             )
-            if send_type:
-                st.caption(f"📥 Input Priority: {' → '.join(send_type)}")
-            else:
-                st.caption("⚠️ No input type selected")
 
             # API Keys
             chemspider_key = None
@@ -594,13 +610,18 @@ elif step == "Web Requests":
                 cas_key = st.text_input("CAS Common Chemistry API Key", type="password")
 
         with col_req2:
-            req_types = st.multiselect(
-                "Request Properties (Output)",
-                ["smiles", "cas", "name", "iupac", "mw"],
-                default=["cas", "iupac"]
+            send_type = st.multiselect(
+                "Send Identifier Input (Priority Order)",
+                ["smiles", "cas", "name"],
+                default=["smiles"]
             )
+            if send_type:
+                st.caption(f"📥 Input Priority: {' → '.join(send_type)}")
+            else:
+                st.caption("⚠️ No input type selected")
 
-            max_workers = st.slider("Max Workers (Threads)", 1, 16, 4, help="Number of concurrent requests.")
+            max_workers = st.number_input("Max Workers (Threads)", min_value=1, max_value=16, value=4, step=1,
+                                          help="Number of concurrent requests.")
 
         with st.expander("⚙️ Advanced Configuration (Timeouts, Retries, Limits)", expanded=False):
             st.caption("Fine-tune network behavior to handle API rate limits or unstable connections.")
@@ -672,7 +693,7 @@ elif step == "Web Requests":
                         pipeline.web_request(send=send_type, request=req_types, progress_callback=update_progress)
                         new_web_cols = [f"{prop}_from_web" for prop in req_types]
                         new_web_cols.extend(['Query_Status', 'Data_Source', 'Query_Method'])
-                        update_highlights(new_web_cols)
+                        track_gen_cols(new_web_cols)
                         update_preview()
                         st.success("Web request finished.")
                 except Exception as e:
@@ -724,7 +745,7 @@ elif step == "Deduplication":
                 cols_to_light = ['Deduplication Strategy']
                 if pipeline.target_col and pipeline.target_col.endswith("_new"):
                     cols_to_light.append(pipeline.target_col)
-                update_highlights(cols_to_light)
+                track_gen_cols(cols_to_light)
                 update_preview()
                 st.success("Deduplication complete.")
             except Exception as e:
@@ -746,10 +767,10 @@ elif step == "Search & Filter":
             query = st.text_input("Enter Pattern (SMARTS/SMILES)")
             is_smarts = st.checkbox("Is SMARTS Pattern?", value=True)
 
-            if st.button("Search"):
+            if st.button("Search", type="primary"):
                 try:
                     pipeline.substructure_search(query, is_smarts=is_smarts)
-                    update_highlights(f'Substructure_{query}')
+                    track_gen_cols(f'Substructure_{query}')
                     update_preview()
                     st.success(f"Search complete. Check for column 'Substructure_{query}'")
                 except Exception as e:
@@ -769,7 +790,7 @@ elif step == "Search & Filter":
             use_heavy = st.checkbox("Apply Heavy Atom Filter", value=True)
             use_total = st.checkbox("Apply Total Atom Filter", value=False)
 
-            if st.button("Apply Filter"):
+            if st.button("Apply Filter", type="primary"):
                 try:
                     kwargs = {}
                     if use_heavy:
@@ -797,11 +818,14 @@ elif step == "Export":
     else:
         st.markdown(f"**Current Dataset Shape:** {pipeline.df.shape[0]} rows, {pipeline.df.shape[1]} columns")
 
-        col_file1, col_file2 = st.columns(2)
+        col_file1, col_file2 = st.columns([1, 3])
         with col_file1:
             save_fmt = st.selectbox("File Format", ["csv", "xlsx", "txt", "sdf", "smi"])
         with col_file2:
-            filename = st.text_input("Output Filename", value=f"diptox_processed.{save_fmt}")
+            base_filename = st.text_input("Output Filename (Without extension)", value="diptox_processed")
+        clean_base_name = os.path.splitext(base_filename)[0]
+        filename = f"{clean_base_name}.{save_fmt}"
+        st.info(f"💾 File will be saved as: **{filename}**")
 
         st.divider()
         st.subheader("Select Columns")
@@ -853,53 +877,59 @@ elif step == "Export":
         )
 
         if selected_cols:
-            st.caption("Preview of export file (First 5 rows):")
-            st.dataframe(pipeline.df[selected_cols].head(5), width="stretch", hide_index=True)
-        else:
-            st.warning("⚠️ No columns selected! File will be empty.")
+            st.caption("Preview:")
+            st.dataframe(pipeline.df[selected_cols].head(5), use_container_width=None)
 
-        st.markdown("###")  # Spacer
-        if st.button("Generate Download File", type="primary", width="stretch", disabled=not selected_cols):
-            try:
-                pipeline.save_results(filename, columns=selected_cols)
+            col_gen, col_dl, col_space = st.columns([1, 1, 4])
+            msg_container = st.empty()
+            with col_gen:
+                if st.button("Generate Download File", type="primary", width="stretch"):
+                    try:
+                        pipeline.save_results(filename, columns=selected_cols)
+                        with open(filename, "rb") as f:
+                            st.session_state.export_data = f.read()
+                            st.session_state.export_fname = filename
+                        if os.path.exists(filename): os.remove(filename)
+                        msg_container.success(f"✅ File **{filename}** generated successfully! Ready to download ->")
+                    except Exception as e:
+                        msg_container.error(f"Error: {str(e)}")
 
-                with open(filename, "rb") as f:
-                    file_data = f.read()
+            with col_dl:
+                file_data = st.session_state.export_data
+                file_name = st.session_state.export_fname or filename
 
                 st.download_button(
                     label="⬇️ Click to Download",
-                    data=file_data,
-                    file_name=filename,
+                    data=file_data if file_data else b"",
+                    file_name=file_name,
                     mime="application/octet-stream",
-                    width="stretch"
+                    disabled=(file_data is None),
+                    type="primary" if file_data else "secondary",
+                    width = "stretch"
                 )
-
-                if os.path.exists(filename):
-                    os.remove(filename)
-            except Exception as e:
-                st.error(f"Export failed: {str(e)}")
+        else:
+            st.warning("⚠️ No columns selected! File will be empty.")
 
 # --- Bottom: Data Preview ---
 st.divider()
 st.subheader("📊 Data Preview (First 50 Rows)")
 if st.session_state.df_preview is not None:
     df_head = st.session_state.df_preview.head(50)
-    valid_highlights = [
-        col for col in st.session_state.highlight_cols
-        if col in df_head.columns
-    ]
+    styled_df = df_head.style
 
-    if valid_highlights:
-        styled_df = df_head.style.set_properties(
-            subset=valid_highlights,
-            **{
-                'background-color': '#FFF8DC',
-                'color': '#333333',
-                'border-color': '#ffffff'
-            }
+    valid_user_cols = [c for c in st.session_state.user_cols if c in df_head.columns]
+    valid_gen_cols = [c for c in st.session_state.gen_cols if c in df_head.columns]
+
+    if valid_user_cols:
+        styled_df = styled_df.set_properties(
+            subset=valid_user_cols,
+            **{'background-color': '#FFF8DC', 'color': 'black'}
         )
-        st.dataframe(styled_df, width="stretch")
-    else:
-        st.dataframe(df_head, width="stretch")
+    if valid_gen_cols:
+        styled_df = styled_df.set_properties(
+            subset=valid_gen_cols,
+            **{'background-color': '#E6F3FF', 'color': 'black'}
+        )
+    st.dataframe(styled_df, width="stretch")
 else:
     st.caption("No data loaded.")
