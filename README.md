@@ -16,7 +16,7 @@ DiPTox now includes a user-friendly **Graphical User Interface (GUI)** powered b
 #### DiPTox Community Check-in (Optional)
 To help us understand our user base and improve the software, DiPTox includes a one-time, optional survey on first use. 
 -   **Completely Optional**: You can skip it with a single click.
--   **Privacy-Focused**: The information helps us with academic impact assessment and grant applications. It will not be shared.
+-   **Privacy-Focused**: The information helps us with academic impact assessment. It will not be shared.
 
 ## Core Features
 
