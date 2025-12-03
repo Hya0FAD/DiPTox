@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.2.6-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.0-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">
@@ -8,15 +8,14 @@
 
 **DiPTox** 是一个专为分子数据集的稳健预处理、标准化及多源数据整合而设计的 Python 工具包，专注于计算毒理学工作流。
 
-## v1.2 新特性：交互式 GUI
-DiPTox 现在包含一个基于 Streamlit 的用户友好型 **图形用户界面 (GUI)**。用户可以通过可视化的 Web 界面执行数据加载、预处理、Web 检索和去重，无需编写任何代码。
+## v1.3 新特性：单位标准化与转换
+处理异构实验数据时，经常需要应对混乱的单位（如 *mg/L, ug/mL, M, ppm, %*）。DiPTox v1.3 引入了 **单位处理器 (Unit Processor)** 来自动化这一过程：
+-   **自动转换**：内置了针对 **浓度**（质量/体积、摩尔、比例）、**时间**、**压力** 和 **温度** 的常用转换规则。
+-   **自定义公式**：支持通过 GUI 或脚本交互式定义数学转换规则（例如 `x * 1000` 或 `10**(-x)`）。
+-   **Log 变换**：去重模块现在支持通过单一参数对目标值进行可选的 `-log10` 变换（例如将 IC50 转换为 pIC50）。
 
--   **可视化操作**：通过浏览器完全控制工作流。
--   **实时预览**：应用规则后即时查看数据变化。
--   **规则管理**：交互式添加/移除有效原子、盐和溶剂。
--   **接口更新**：针对 **PubChem、CAS Common Chemistry 和 CompTox Dashboard** 的接口已更新，以适配其最新的 API 规范，确保数据检索的稳定性。
 
-#### DiPTox 社区登记 (可选)
+## DiPTox 社区登记 (可选)
 为了更好地了解用户群体并改进软件，DiPTox 在首次使用时会提供一个一次性的、可选的用户信息登记。
 -   **完全自愿**：您只需点击一下即可跳过。
 -   **注重隐私**：收集的信息仅用于学术影响力评估或科研项目申请，绝不会被分享。
@@ -24,6 +23,7 @@ DiPTox 现在包含一个基于 Streamlit 的用户友好型 **图形用户界�
 ## 核心功能
 
 #### 图形用户界面 (GUI)
+基于 Streamlit 构建，允许用户通过可视化方式执行所有工作流，无需编写代码。
 -   **可视化操作**：通过浏览器完全控制工作流
 -   **实时预览**：应用规则后即时查看数据变化
 -   **规则管理**：交互式添加/移除有效原子、盐和溶剂
@@ -43,12 +43,16 @@ DiPTox 现在包含一个基于 Streamlit 的用户友好型 **图形用户界�
 -   **将分子标准化**为规范的SMILES
 -   **按原子数量过滤**（重原子或总原子）
 
+#### 单位标准化 (新增)
+-   将多样化的目标值标准化为统一单位（例如将所有数据转换为 `mg/L`）。
+-   支持复杂的转换逻辑和自定义数学表达式。
+
 #### 数据去重
 -   为重复条目提供灵活的去重策略（基于 `smiles` 或基于 `continuous`/`discrete` 目标值）。
 -   可自定义的匹配条件（如温度、压强）和去重处理方法（`auto`、`IQR`、`3sigma` 或自定义方法）。
 
 #### 标识符与属性集成（通过Web服务）
--   从多个在线数据库（**PubChem、ChemSpider、CompTox、Cactus、CAS Common Chemistry**）获取并互相转换化学标识符（**CAS号、SMILES、IUPAC名称、常用名、分子量**）。
+-   从多个在线数据库（**PubChem、ChemSpider、CompTox、Cactus、CAS Common Chemistry、ChEMBL**）获取并互相转换化学标识符（**CAS号、SMILES、IUPAC名称、常用名、分子量**）。
 -   通过高性能的**并发请求**加速数据获取。
 -   为需要身份验证的服务提供集中的 API 密钥管理。
 
@@ -77,7 +81,7 @@ from diptox import DiptoxPipeline
 DP = DiptoxPipeline()
 
 # 加载数据（可以来自文件路径、列表或DataFrame）
-DP.load_data(input_data='file_path/list/dataframe', smiles_col, target_col, cas_col)
+DP.load_data(input_data='file_path/list/dataframe', smiles_col, target_col, cas_col, unit_col)
 
 # 自定义处理规则（可选）
 print("--- 默认规则 ---")
@@ -109,8 +113,10 @@ DP.preprocess(
   reject_radical_species=True # 移除含有游离基原子的分子。默认：True。
 )
 
-# 配置去重
-DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority)
+# 配置去重与单位标准化
+conversion_rules = {('g/L', 'mg/L'): 'x * 1000', 
+                    ('ug/L', 'mg/L'): 'x / 1000',}
+DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority, standard_unit, conversion_rules, log_transform)
 DP.data_deduplicate()
 
 # 配置Web查询
@@ -133,6 +139,7 @@ DiPTox 支持以下化学数据库：
 -   `CompTox`: https://comptox.epa.gov/dashboard/
 -   `Cactus`: https://cactus.nci.nih.gov/
 -   `CAS`: https://commonchemistry.cas.org/
+-   `ChEMBL`: https://www.ebi.ac.uk/chembl/
 
 **注意**：`ChemSpider` 、 `CompTox` 和 `CAS` 需要 API 密钥。请在配置时提供：
 ```python

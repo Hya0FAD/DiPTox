@@ -8,6 +8,7 @@ import time
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from diptox.core import DiptoxPipeline
 from diptox import user_reg
+from diptox.unit_processor import UnitProcessor
 
 st.set_page_config(
     page_title="DiPTox GUI",
@@ -57,6 +58,8 @@ if 'export_data' not in st.session_state:
     st.session_state.export_data = None
 if 'export_fname' not in st.session_state:
     st.session_state.export_fname = None
+if 'dedup_condition_cols' not in st.session_state:
+    st.session_state.dedup_condition_cols = []
 
 pipeline = st.session_state.pipeline
 
@@ -80,7 +83,8 @@ def track_gen_cols(cols):
 # --- Side bar navigation ---
 st.sidebar.title("DiPTox Control Panel")
 step = st.sidebar.radio("Go to Step:",
-                        ["Data Loading", "Preprocessing", "Web Requests", "Deduplication", "Search & Filter", "Export"])
+                        ["Data Loading", "Preprocessing", "Web Requests", "Unit Standardization",
+                         "Deduplication", "Search & Filter", "Export"])
 
 
 def update_preview():
@@ -211,34 +215,35 @@ if step == "Data Loading":
                     st.caption("Map your file columns to DiPTox fields. All fields are optional.")
 
                     c1, c2 = st.columns(2)
-
                     # 1. SMILES Column
                     smiles_col = c1.selectbox("SMILES Column (Optional)", options_with_none, index=0)
-
                     # 2. Target Column
-                    target_col = c2.selectbox("Target Column (Optional)", options_with_none, index=0)
+                    name_col = c2.selectbox("Name Column (Optional)", options_with_none, index=0)
 
                     c3, c4 = st.columns(2)
-
                     # 3. CAS Column
                     cas_col = c3.selectbox("CAS Column (Optional)", options_with_none, index=0)
-
                     # 4. ID Column
                     id_col = c4.selectbox("ID Column (for .smi/.sdf)", options_with_none, index=0)
 
+                    c5, c6 = st.columns(2)
                     # 5. Name Column
-                    name_col = st.selectbox("Name Column (Optional)", options_with_none, index=0)
+                    target_col = c5.selectbox("Target Column (Optional)", options_with_none, index=0)
+                    # 6. Unit Column
+                    unit_col = c6.selectbox("Unit Column (Optional)", options_with_none, index=0)
 
             else:
                 st.warning("Could not detect columns automatically. Please enter manually.")
                 with st.expander("Column Configuration", expanded=True):
                     c1, c2 = st.columns(2)
                     smiles_col = c1.text_input("SMILES Column (Optional)", value="")
-                    target_col = c2.text_input("Target Column (Optional)", value="")
+                    name_col = c2.text_input("Name Column (Optional)", value="")
                     c3, c4 = st.columns(2)
                     cas_col = c3.text_input("CAS Column (Optional)", value="")
                     id_col = c4.text_input("ID Column (for .smi)", value="")
-                    name_col = st.text_input("Name Column (Optional)", value="")
+                    c5, c6 = st.columns(2)
+                    target_col = c5.text_input("Target Column (Optional)", value="")
+                    unit_col = c6.text_input("Unit Column (Optional)", value="")
 
             if st.button("Load Data from File", type="primary"):
                 try:
@@ -255,6 +260,7 @@ if step == "Data Loading":
 
                     final_smiles = clean_col_name(smiles_col)
                     final_target = clean_col_name(target_col)
+                    final_unit = clean_col_name(unit_col)
                     final_cas = clean_col_name(cas_col)
                     final_name = clean_col_name(name_col)
                     final_id = clean_col_name(id_col)
@@ -264,12 +270,13 @@ if step == "Data Loading":
                         smiles_col=final_smiles,
                         cas_col=final_cas,
                         target_col=final_target,
+                        unit_col=final_unit,
                         name_col=final_name,
                         id_col=final_id,
                         **kwargs
                     )
 
-                    track_user_cols([final_smiles, final_target, final_cas, final_name, final_id])
+                    track_user_cols([final_smiles, final_target, final_unit, final_cas, final_name, final_id])
 
                     update_preview()
                     st.success(f"Successfully loaded {len(pipeline.df)} records!")
@@ -701,6 +708,74 @@ elif step == "Web Requests":
                 finally:
                     progress_container.empty()
 
+# Unit Standardization
+elif step == "Unit Standardization":
+    st.header("Unit Standardization")
+
+    if pipeline.df is None:
+        st.warning("Please load data first.")
+    elif not pipeline.target_col or not pipeline.unit_col:
+        st.warning("This step requires both a 'Target Column' and a 'Unit Column' to be specified during Data Loading.")
+    else:
+        st.info(f"Processing Target Column: **{pipeline.target_col}** with units from: **{pipeline.unit_col}**")
+
+        unique_units = [u for u in pipeline.df[pipeline.unit_col].dropna().unique() if u]
+
+        if len(unique_units) <= 1:
+            st.success("Only one unit was detected, or no units were found. This step is not required.")
+        else:
+            st.markdown("### Define Conversion Rules")
+            st.caption(
+                "Select a standard unit and provide formulas to convert others to it. Leave a formula blank to remove data with that unit.")
+
+            st.info(f"Detected Units: **{', '.join(unique_units)}**")
+
+            standard_unit = st.selectbox("Select the Standard Unit", options=unique_units)
+
+            conversion_rules = {}
+            temp_processor = UnitProcessor()
+
+            with st.container(border=True):
+                st.markdown("##### Conversion Formulas")
+
+                other_units = [u for u in unique_units if u != standard_unit]
+                col1, col2, col3 = st.columns(3)
+
+                for i, unit in enumerate(other_units):
+                    target_col = col1 if i % 3 == 0 else (col2 if i % 3 == 1 else col3)
+                    default_rule = temp_processor.get_rule(unit, standard_unit)
+                    pre_fill_value = default_rule if default_rule else ""
+                    help_msg = "Built-in rule detected." if default_rule else "No built-in rule. Please enter manually."
+                    with target_col:
+                        formula = st.text_input(
+                            label=f"**{unit}** → **{standard_unit}**",
+                            value=pre_fill_value,
+                            placeholder="e.g., x * 1000",
+                            help=f"{help_msg} Use 'x' as value. Clear to skip.",
+                            key=f"rule_{unit}_to_{standard_unit}"
+                        )
+                        if formula:
+                            conversion_rules[(unit, standard_unit)] = formula
+
+            if st.button("🚀 Run Unit Standardization", type="primary"):
+                try:
+                    with st.spinner("Applying unit conversions..."):
+                        pipeline.standardize_units(
+                            standard_unit=standard_unit,
+                            conversion_rules=conversion_rules
+                        )
+
+                        new_target_col = pipeline.target_col
+
+                        track_gen_cols([new_target_col])
+                        update_preview()
+                        st.success(f"Unit standardization complete! New column '{new_target_col}' created.")
+
+                except ValueError as e:
+                    st.error(f"Error: {e}. Please ensure all required conversion formulas are provided and are valid.")
+                except Exception as e:
+                    st.error(f"An unexpected error occurred: {e}")
+
 # Deduplication
 elif step == "Deduplication":
     st.header("Dataset Deduplication")
@@ -715,9 +790,20 @@ elif step == "Deduplication":
 
         method = "auto"
         priority_list = None
+        log_transform = False
 
         if data_type == "continuous":
-            method = st.selectbox("Deduplication Method", ["auto", "3sigma", "IQR"])
+            c1, c2 = st.columns(2)
+            with c1:
+                method = st.selectbox("Deduplication Method", ["auto", "3sigma", "IQR"])
+            with c2:
+                mode_selection = st.selectbox(
+                    "Apply -log10 Transformation",
+                    options=["False", "True"],
+                    index=0,
+                    help="Transforms target values using `y = -log10(x)`. Rows with non-positive values will be removed."
+                )
+                log_transform = False if mode_selection == "False" else True
         elif data_type == "discrete":
             method = "vote"
             st.info("Priority Rule: If specified values exist in a duplicate group, they are selected first.")
@@ -735,19 +821,28 @@ elif step == "Deduplication":
                         st.caption(f"Processing Groups: {current}/{total}")
 
             try:
+                st.session_state.dedup_condition_cols = condition_cols if condition_cols else []
                 pipeline.config_deduplicator(
                     condition_cols=condition_cols if condition_cols else None,
                     data_type=data_type,
                     method=method,
-                    priority=priority_list
+                    priority=priority_list,
+                    log_transform=log_transform
                 )
                 pipeline.dataset_deduplicate()
+                final_target_col = pipeline.target_col
                 cols_to_light = ['Deduplication Strategy']
-                if pipeline.target_col and pipeline.target_col.endswith("_new"):
-                    cols_to_light.append(pipeline.target_col)
+                if final_target_col and final_target_col in pipeline.df.columns:
+                    cols_to_light.append(final_target_col)
                 track_gen_cols(cols_to_light)
                 update_preview()
                 st.success("Deduplication complete.")
+            except ValueError as e:
+                if "Unit standardization is required" in str(e):
+                    st.error(
+                        "Deduplication failed: Unit standardization is required but has not been completed. Please go to the 'Unit Standardization' step and run it first.")
+                else:
+                    st.error(f"Deduplication failed with an error: {e}")
             except Exception as e:
                 st.error(f"Deduplication failed: {str(e)}")
             finally:
@@ -841,12 +936,15 @@ elif step == "Export":
             if pipeline.cas_col and pipeline.cas_col in all_cols: rec.append(pipeline.cas_col)
             if pipeline.name_col and pipeline.name_col in all_cols: rec.append(pipeline.name_col)
 
-            tgt = pipeline.target_col
-            if tgt:
-                if tgt.endswith("_new") and tgt in all_cols:
-                    rec.append(tgt)
-                elif tgt in all_cols:
-                    rec.append(tgt)
+            # Unit and Target columns
+            if pipeline.unit_col and pipeline.unit_col in all_cols: rec.append(pipeline.unit_col)
+            if pipeline.target_col and pipeline.target_col in all_cols:
+                rec.append(pipeline.target_col)
+
+            if st.session_state.dedup_condition_cols:
+                for col in st.session_state.dedup_condition_cols:
+                    if col in all_cols and col not in rec:
+                        rec.append(col)
 
             keywords = ['Canonical SMILES', 'InChI', 'Is Valid', 'from_web', 'Substructure_', 'Deduplication Strategy']
             for col in all_cols:

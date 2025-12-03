@@ -11,6 +11,7 @@ from .web_request import WebService
 from .data_io import DataHandler
 from .data_deduplicator import DataDeduplicator
 from .substructure_search import SubstructureSearcher
+from .unit_processor import UnitProcessor
 from .logger import log_manager
 logger = log_manager.get_logger(__name__)
 from diptox import user_reg
@@ -38,12 +39,15 @@ class DiptoxPipeline:
         self.cas_col: Optional[str] = None
         self.name_col: Optional[str] = None
         self.target_col: Optional[str] = None
+        self.unit_col: Optional[str] = None
         self.inchikey_col = None
         self.id_col: Optional[str] = None
 
         self.deduplicator = None
         self.web_service = None
         self._preprocess_key = 0
+        self._units_standardized = False
+        self._dedup_unit_settings = None
         self.web_source = None
 
     def _check_initial_registration(self):
@@ -91,21 +95,25 @@ class DiptoxPipeline:
                   cas_col: Optional[str] = None,
                   name_col: Optional[str] = None,
                   target_col: Optional[str] = None,
+                  unit_col: Optional[str] = None,
                   inchikey_col: Optional[str] = None,
                   id_col: Optional[str] = None,
                   **kwargs) -> None:
         """
         Load data and initialize columns for processing.
         :param input_data: Path to input data (.xlsx/.xls/.csv/.txt/.sdf/.smi), or a list, or a DataFrame.
-        :param smiles_col: The column name containing SMILES strings.
-        :param cas_col: The column name for CAS Numbers.
-        :param name_col: The column name for names.
+        :param smiles_col: The column name containing SMILES strings (optional).
+        :param cas_col: The column name for CAS Numbers (optional).
+        :param name_col: The column name for names (optional).
         :param target_col: The column name for target values (optional).
+        :param unit_col: The column name for units of the target values (optional).
         :param inchikey_col: The column name for InChIKeys (optional).
         :param id_col: The column name for SMI file's SMILES ID (optional)
         :param sep: CSV file delimiter.
         """
-        df = self.data_handler.load_data(input_data, smiles_col, cas_col, target_col, inchikey_col, id_col, **kwargs)
+        df = self.data_handler.load_data(input_data=input_data, smiles_col=smiles_col, cas_col=cas_col,
+                                         target_col=target_col, unit_col=unit_col, inchikey_col=inchikey_col,
+                                         id_col=id_col, **kwargs)
 
         if 'Canonical SMILES' not in df.columns:
             df['Canonical SMILES'] = pd.Series(pd.NA, index=df.index, dtype="string")
@@ -132,8 +140,11 @@ class DiptoxPipeline:
         self.cas_col = cas_col
         self.name_col = name_col
         self.target_col = target_col
+        self.unit_col = unit_col
         self.inchikey_col = inchikey_col
         self.id_col = id_col
+        self._units_standardized = False
+        self._dedup_unit_settings = None
 
     def _ensure_dtypes_after_load(self) -> None:
         """
@@ -313,12 +324,116 @@ class DiptoxPipeline:
         self.df.at[idx, 'Processing Log'] = "" if comment is None else str(comment)
         self.df.at[idx, 'Canonical SMILES'] = (pd.NA if smiles is None else str(smiles))
 
+    @check_data_loaded
+    def standardize_units(self, standard_unit: Optional[str] = None,
+                          conversion_rules: Optional[Dict[Tuple[str, str], str]] = None) -> None:
+        """
+        Orchestrates the standardization of units for the target column.
+        :param standard_unit: The target unit to convert all values to.
+        :param conversion_rules: A dictionary of conversion rules, e.g., {('mg/L', 'ug/L'): 'x * 1000'}.
+        """
+        if not self.target_col or not self.unit_col:
+            logger.info("Target column or unit column not specified, skipping unit standardization.")
+            self._units_standardized = True
+            return
+
+        unique_units = [u for u in self.df[self.unit_col].dropna().unique() if u]
+        if len(unique_units) <= 1:
+            logger.info("Only one unit detected. No conversion necessary.")
+            # Ensure a consistent '_new' column is created for the next step
+            new_target_col = f"{self.target_col} (Standardized)"
+            new_unit_col = f"{self.unit_col} (Standardized)"
+            self.df[new_target_col] = self.df[self.target_col]
+            self.df[new_unit_col] = self.df[self.unit_col]
+            self.target_col = new_target_col
+            self.unit_col = new_unit_col
+            self._units_standardized = True
+            return
+
+        final_standard_unit = standard_unit
+        is_gui_mode = os.environ.get("DIPTOX_GUI_MODE") == "true"
+
+        if not final_standard_unit:
+            if is_gui_mode:
+                raise ValueError("A standard unit must be provided when multiple units exist.")
+            final_standard_unit = self._select_standard_unit_interactively(unique_units)
+            if not final_standard_unit:
+                return
+
+        unit_processor = UnitProcessor(rules=conversion_rules)
+
+        rule_provider = None
+        if not is_gui_mode:
+            prompt_tracker = {'first_time': True}
+            rule_provider = lambda from_unit, to_unit: self._get_rule_from_user(from_unit, to_unit, prompt_tracker)
+
+        try:
+            self.df, new_target_col, new_unit_col = unit_processor.standardize(
+                df=self.df,
+                target_col=self.target_col,
+                unit_col=self.unit_col,
+                standard_unit=final_standard_unit,
+                rule_provider_callback=rule_provider
+            )
+            self.target_col = new_target_col
+            self.unit_col = new_unit_col
+            self._units_standardized = True
+        except ValueError as e:
+            logger.error(f"Unit standardization failed: {e}")
+            raise
+
+    @staticmethod
+    def _select_standard_unit_interactively(unique_units: List[str]) -> Optional[str]:
+        """Handles the interactive command-line prompt for selecting a standard unit."""
+        print("Multiple units found. Please select a standard unit to convert to:")
+        for i, unit in enumerate(unique_units):
+            print(f"{i + 1}: {unit}")
+
+        while True:
+            try:
+                choice_input = input(f"Enter the number of the standard unit (1-{len(unique_units)}): ").strip()
+                choice = int(choice_input) - 1
+                if 0 <= choice < len(unique_units):
+                    selected_unit = unique_units[choice]
+                    logger.info(f"Standard unit set to '{selected_unit}'.")
+                    return selected_unit
+                else:
+                    print("Invalid number. Please try again.")
+            except (ValueError, IndexError):
+                print("Invalid input. Please enter a number.")
+            except (EOFError, KeyboardInterrupt):
+                logger.warning("Unit selection cancelled by user.")
+                return None
+
+    @staticmethod
+    def _get_rule_from_user(from_unit: str, to_unit: str, tracker: Dict) -> Optional[str]:
+        """Callback function to get conversion rules from the command-line user."""
+        print("-" * 30)
+        print(f"No conversion rule found for '{from_unit}' -> '{to_unit}'.")
+
+        if tracker['first_time']:
+            print("Please provide a conversion formula (use 'x' for the value).")
+            print("Example (mg/L to ug/L): x * 1000")
+            print("Example (log(mol/L) to mol/L): 10**(-x)")
+            tracker['first_time'] = False
+
+        try:
+            prompt = "Enter formula (press Enter to skip; data with this unit will be removed): "
+            formula_input = input(prompt).strip()
+            return formula_input if formula_input else None
+        except (EOFError, KeyboardInterrupt):
+            logger.warning(f"Rule input for '{from_unit}' cancelled.")
+            return None
+
     def config_deduplicator(self, condition_cols: Optional[List[str]] = None,
                             data_type: str = "continuous",
                             method: str = "auto",
                             priority: Optional[List[str]] = None,
                             p_threshold: float = 0.05,
-                            custom_method: Optional[Callable] = None) -> None:
+                            custom_method: Optional[Callable] = None,
+                            standard_unit: Optional[str] = None,
+                            conversion_rules: Optional[Dict[Tuple[str, str], str]] = None,
+                            log_transform: bool = False) -> None:
         """
         Configure the deduplicator device
         :param condition_cols: Data condition column (e.g. temperature, pressure, etc.)
@@ -327,18 +442,19 @@ class DiptoxPipeline:
         :param priority: List of preferred values for discrete data
         :param p_threshold: Threshold of normal distribution
         :param custom_method: Custom method of data deduplication
+        :param standard_unit: The target unit to standardize to before deduplication.
+        :param conversion_rules: A dictionary of rules for unit conversion.
+        :param log_transform: If True, applies a -log10 transformation to the target column.
         """
+        if standard_unit or conversion_rules:
+            self._dedup_unit_settings = {'standard_unit': standard_unit, 'conversion_rules': conversion_rules}
+
         smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
 
         self.deduplicator = DataDeduplicator(
-            smiles_col=smiles_col,
-            target_col=self.target_col,
-            condition_cols=condition_cols,
-            data_type=data_type,
-            method=method,
-            p_threshold=p_threshold,
-            priority=priority,
-            custom_method=custom_method
+            smiles_col=smiles_col, target_col=self.target_col, condition_cols=condition_cols,
+            data_type=data_type, method=method, p_threshold=p_threshold, priority=priority,
+            custom_method=custom_method, log_transform=log_transform
         )
 
     @check_data_loaded
@@ -346,6 +462,24 @@ class DiptoxPipeline:
         """Execution deduplicator removal"""
         if not self.deduplicator:
             raise ValueError("Deduplicator not configured. Call config_deduplicator first.")
+
+        if self._dedup_unit_settings and not self._units_standardized:
+            logger.info("Implicitly running unit standardization as part of deduplication.")
+            self.standardize_units(
+                standard_unit=self._dedup_unit_settings.get('standard_unit'),
+                conversion_rules=self._dedup_unit_settings.get('conversion_rules')
+            )
+
+        needs_standardization = False
+        if self.target_col and self.unit_col and self.unit_col in self.df.columns:
+            unique_count = self.df[self.unit_col].dropna().nunique()
+            needs_standardization = unique_count > 1
+
+        if needs_standardization and not self._units_standardized:
+            raise ValueError(
+                "Unit standardization is required but has not been performed. Please go to the 'Unit Standardization' step first.")
+
+        self.deduplicator.target_col = self.target_col
 
         self.df = self.deduplicator.deduplicate(self.df, progress_callback=progress_callback)
         if self.target_col:

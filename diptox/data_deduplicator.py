@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 from typing import List, Optional, Dict, Any, Callable, Tuple
+import warnings
 from .logger import log_manager
 logger = log_manager.get_logger(__name__)
 
@@ -16,7 +17,8 @@ class DataDeduplicator:
                  method: str = "auto",
                  p_threshold: float = 0.05,
                  priority: Optional[List[str]] = None,
-                 custom_method: Optional[Callable[[pd.Series], Tuple[pd.Series, str]]] = None):
+                 custom_method: Optional[Callable[[pd.Series], Tuple[pd.Series, str]]] = None,
+                 log_transform: bool = False):
         """
         :param smiles_col: The name of the SMILES column
         :param target_col: The name of the target value column (optional)
@@ -26,6 +28,7 @@ class DataDeduplicator:
         :param p_threshold: Threshold of normal distribution
         :param priority: List of values in descending order of priority for discrete deduplication
         :param custom_method: Custom method of data deduplication
+        :param log_transform: If True, applies a -log10 transformation to the target column before continuous deduplication.
         """
         self.smiles_col = smiles_col
         self.target_col = target_col
@@ -35,6 +38,7 @@ class DataDeduplicator:
         self.custom_method = custom_method
         self._p_threshold = p_threshold
         self.priority_list = priority
+        self.log_transform = log_transform
 
         if custom_method and not callable(custom_method):
             raise ValueError("custom_outlier_handler must be a callable function")
@@ -52,10 +56,20 @@ class DataDeduplicator:
     def deduplicate(self, df: pd.DataFrame, progress_callback: Optional[Callable] = None) -> pd.DataFrame:
         """Main deduplication method"""
         self._validate_columns(df)
-        df = df[df[self.smiles_col].notna()]
+        df = df[df[self.smiles_col].notna()].copy()
+
+        if self.target_col and self.data_type == 'continuous' and self.log_transform:
+            logger.info(f"Applying -log10 transformation to the target column '{self.target_col}'.")
+            initial_rows = len(df)
+            positive_mask = pd.to_numeric(df[self.target_col], errors='coerce') > 0
+            if not positive_mask.all():
+                df = df[positive_mask]
+                removed_count = initial_rows - len(df)
+                logger.warning(
+                    f"Removed {removed_count} rows with non-positive target values before log transformation.")
+            df[self.target_col] = -np.log10(pd.to_numeric(df[self.target_col], errors='coerce'))
 
         group_keys = [self.smiles_col] + self.condition_cols
-
         grouped = df.groupby(group_keys, group_keys=False, sort=False)
 
         if self.data_type == 'smiles':
@@ -157,6 +171,13 @@ class DataDeduplicator:
         else:
             clean_values, method = self._remove_outliers(values, p_threshold)
 
+        if clean_values.empty:
+            logger.warning(
+                f"All values in group for SMILES '{group[self.smiles_col].iloc[0]}' "
+                f"were removed as outliers. Skipping this group."
+            )
+            return pd.DataFrame()
+
         final_value = clean_values.mean()
         valid_indices = clean_values.index
         valid_group = group.loc[valid_indices]
@@ -193,7 +214,12 @@ class DataDeduplicator:
     def _is_normal_distribution(values: pd.Series, p_threshold: float) -> bool:
         """Normal distribution test (Shapiro-Wilk)"""
         from scipy.stats import shapiro
-        stat, p = shapiro(values)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Input data for shapiro has range zero.*", category=UserWarning)
+            try:
+                stat, p = shapiro(values)
+            except ValueError:
+                return True
         return p > p_threshold
 
     @staticmethod

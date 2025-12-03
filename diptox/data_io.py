@@ -15,6 +15,7 @@ class DataHandler:
                   cas_col: Optional[str] = None,
                   name_col: Optional[str] = None,
                   target_col: Optional[str] = None,
+                  unit_col: Optional[str] = None,
                   inchikey_col: Optional[str] = None,
                   id_col: Optional[str] = None,
                   **kwargs) -> pd.DataFrame:
@@ -24,15 +25,17 @@ class DataHandler:
             - File path (csv/xlsx/xls/txt)
             - SMILES list
             - Pre-loaded DataFrame
-        :param smiles_col: SMILES column name
-        :param cas_col: The column name for CAS Numbers.
-        :param name_col: Name column name
+        :param smiles_col: SMILES column name (optional)
+        :param cas_col: The column name for CAS Numbers (optional)
+        :param name_col: Name column name (optional)
         :param target_col: Target value column name (optional)
+        :param unit_col: Unit for target value column name (optional)
         :param inchikey_col: Inchikey column name (optional)
         :param id_col: SMI file's SMILES ID column name (optional)
         """
         if isinstance(input_data, str):
-            return DataHandler._load_from_file(input_data, smiles_col, cas_col, name_col, target_col, inchikey_col, id_col, **kwargs)
+            return DataHandler._load_from_file(input_data, smiles_col, cas_col, name_col, target_col, unit_col,
+                                               inchikey_col, id_col, **kwargs)
         elif isinstance(input_data, list):
             return DataHandler._load_from_list(input_data, smiles_col)
         elif isinstance(input_data, pd.DataFrame):
@@ -46,6 +49,7 @@ class DataHandler:
                         cas_col: Optional[str] = None,
                         name_col: Optional[str] = None,
                         target_col: Optional[str] = None,
+                        unit_col: Optional[str] = None,
                         inchikey_col: Optional[str] = None,
                         id_col: Optional[str] = None,
                         **kwargs) -> pd.DataFrame:
@@ -113,6 +117,9 @@ class DataHandler:
             raise
         if target_col is not None and target_col not in df.columns:
             logger.error(f"The target value column '{target_col}' does not exist in the file")
+            raise
+        if unit_col is not None and unit_col not in df.columns:
+            logger.warning(f"The unit column '{unit_col}' does not exist in the file")
             raise
         if name_col is not None and name_col not in df.columns:
             logger.error(f"The name column '{name_col}' does not exist in the file")

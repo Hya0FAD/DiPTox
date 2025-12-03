@@ -1,29 +1,29 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.2.6-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.0-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
 **DiPTox** is a Python toolkit designed for the robust preprocessing, standardization, and multi-source data integration of molecular datasets, with a focus on computational toxicology workflows.
 
-## New in v1.2: Interactive GUI
-DiPTox now includes a user-friendly **Graphical User Interface (GUI)** powered by Streamlit. This allows users to perform data loading, preprocessing, web retrieval, and deduplication through a visual web interface without writing any code.
--   **Visual Operation**: Complete workflow control via a web browser.
--   **Real-time Preview**: Instantly view data changes after applying rules.
--   **Rule Management**: Add/Remove valid atoms, salts, and solvents interactively.
--   **Updated Web Connectors**: Interfaces for **PubChem, CAS Common Chemistry, and the CompTox Dashboard** have been updated to align with their latest API specifications, ensuring reliable data retrieval.
+## New in v1.3: Unit Standardization & Transformation
+Handling heterogeneous experimental data often involves dealing with messy units (e.g., *mg/L, ug/mL, M, ppm, %*). DiPTox v1.3 introduces **Unit Processor** to automate this process:
+-   **Automatic Conversion**: Built-in rules for **Concentration** (mass/vol, molar, parts-per), **Time**, **Pressure**, and **Temperature**.
+-   **Custom Formulas**: Define your own mathematical rules (e.g., `x * 1000` or `10**(-x)`) interactively via the GUI or script.
+-   **Log Transformation**: The deduplication module now supports optional `-log10` transformation (e.g., converting IC50 to pIC50) with a single parameter.
 
-#### DiPTox Community Check-in (Optional)
+## DiPTox Community Check-in (Optional)
 To help us understand our user base and improve the software, DiPTox includes a one-time, optional survey on first use. 
 -   **Completely Optional**: You can skip it with a single click.
--   **Privacy-Focused**: The information helps us with academic impact assessment and grant applications. It will not be shared.
+-   **Privacy-Focused**: The information helps us with academic impact assessment. It will not be shared.
 
 ## Core Features
 
 #### Graphical User Interface (GUI)
+Powered by Streamlit, the GUI allows users to perform all workflows visually without writing code.
 -   **Visual Operation**: Complete workflow control via a web browser.
 -   **Real-time Preview**: Instantly view data changes after applying rules.
--   **Rule Management**: Add/Remove valid atoms, salts, and solvents interactively.
+-   **Rule Management**: Add/Remove valid atoms, salts, solvents, and **unit conversion formulas** interactively.
 
 #### Chemical Preprocessing & Standardization
 A configurable pipeline to clean and normalize chemical structures in a specific, controlled order:
@@ -40,12 +40,17 @@ A configurable pipeline to clean and normalize chemical structures in a specific
 -   **Standardize molecules** to canonical SMILES
 -   **Filter by atom count** (heavy or total atoms)
 
+#### Unit Standardization (New)
+-   Standardize diverse target values to a single unit (e.g., converting all data to `mg/L`).
+-   Support for complex conversions and custom math expressions.
+
 #### Data Deduplication
 -   Flexible strategies for handling duplicate entries (`smiles` or `continuous`/`discrete` targets).
 -   Customizable matching conditions (e.g., temperature, pressure) and deduplication methods (`auto`, `IQR`, `3sigma`, or custom functions).
+-   **New:** Optional `-log10` transformation for bioactivity data before deduplication.
 
 #### Identifier & Property Integration via Web Services
--   Fetch and interconvert chemical identifiers (**CAS, SMILES, IUPAC Name, Common Name, MW**) from multiple online databases (**PubChem, ChemSpider, CompTox, Cactus, CAS Common Chemistry**).
+-   Fetch and interconvert chemical identifiers (**CAS, SMILES, IUPAC Name, Common Name, MW**) from multiple online databases (**PubChem, ChemSpider, CompTox, Cactus, CAS Common Chemistry, ChEMBL**).
 -   High-performance **concurrent requests** to accelerate data retrieval.
 -   Centralized API key management for services that require authentication.
 
@@ -76,7 +81,7 @@ from diptox import DiptoxPipeline
 DP = DiptoxPipeline()
 
 # Load data
-DP.load_data(input_data='file_path/list/dataframe', smiles_col, target_col, cas_col)
+DP.load_data(input_data='file_path/list/dataframe', smiles_col, target_col, cas_col, unit_col)
 
 # Customize Processing Rules (Optional)
 print("--- Default Rules ---")
@@ -108,8 +113,10 @@ DP.preprocess(
   reject_radical_species=True # Molecules containing free radical atoms are directly rejected. Default: True.
 )
 
-# Configure deduplication
-DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority)
+# Configure deduplication and unit standardization
+conversion_rules = {('g/L', 'mg/L'): 'x * 1000', 
+                    ('ug/L', 'mg/L'): 'x / 1000',}
+DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority, standard_unit, conversion_rules, log_transform)
 DP.data_deduplicate()
 
 # Configure web queries
@@ -132,6 +139,7 @@ DiPTox supports the following chemical databases:
 -   `CompTox`: https://comptox.epa.gov/dashboard/
 -   `Cactus`: https://cactus.nci.nih.gov/
 -   `CAS`: https://commonchemistry.cas.org/
+-   `ChEMBL`: https://www.ebi.ac.uk/chembl/
 
 **Note:** `ChemSpider`, `CompTox` and `CAS` require API keys. Provide them during configuration:
 ```python

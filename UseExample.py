@@ -18,7 +18,7 @@
 # - ctx-python (for CompTox integration)
 # - chemspipy (for ChemSpider integration)
 
-# Latest Version: 1.2.6 (2025.11.25)
+# Latest Version: 1.3.0 (2025.12.03)
 
 
 # ==============================================================================
@@ -32,12 +32,15 @@ a = DiptoxPipeline()
 a.load_data(input_data=r"path/to/your/FileName.xlsx", # Supports .xls, .csv, .txt, .sdf, .smi
             smiles_col='SMILES_Column_Name', 
             target_col='Target_Column_Name', 
+            unit_col='Unit_Column_Name',
             cas_col='CAS_Column_Name', 
             id_col='ID_Column_Name') # Note: smiles_col, target_col, cas_col, id_col are all optional.
 a.preprocess()
+a.standardize_units(standard_unit='mg/L')
 a.config_deduplicator(data_type='discrete', # 'smiles', 'discrete' or 'continuous'
                       method='vote', # 'auto', 'vote', '3sigma', 'IQR'
-                      condition_cols=['pH','temperature']) # Example: provide a list of condition columns
+                      condition_cols=['pH','temperature'],
+                      log_transform=True) # Example: provide a list of condition columns
 a.data_deduplicate()
 a.config_web_request(sources=['pubchem', 'cas', 'comptox', 'chemspider', 'cactus'],
                      comptox_api_key='your_key_here', 
@@ -137,7 +140,14 @@ c.config_web_request(sources=['comptox'], comptox_api_key='your_key_here', max_w
 c.web_request(send='cas', request=['smiles', 'iupac'])
 c.preprocess()
 c.substructure_search(query_pattern='C(=O)O', is_smarts=True)  # Match fragments
-c.config_deduplicator(data_type='continuous')  # Defaults to 'auto' method
+rules = {
+    ('ng/mL', 'mg/L'): 'x / 1000000',
+    ('10^-6 M', 'M'): 'x * 1e-6'
+}
+c.config_deduplicator(data_type='continuous',        # Defaults to 'auto' method
+                      standard_unit='mg/L',          # Target unit
+                      conversion_rules=rules,      # Custom rules
+                      log_transform=False)  
 c.data_deduplicate()
 c.save_results('CAS_Processed_Results.xlsx')
 

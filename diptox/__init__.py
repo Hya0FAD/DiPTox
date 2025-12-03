@@ -6,6 +6,7 @@ from .data_io import DataHandler
 from .data_deduplicator import DataDeduplicator
 from .logger import LogManager
 from .substructure_search import SubstructureSearcher
+from .unit_processor import UnitProcessor
 
 __all__ = ["DiptoxPipeline",
            "ChemistryProcessor",
@@ -13,6 +14,7 @@ __all__ = ["DiptoxPipeline",
            "DataHandler",
            "DataDeduplicator",
            "LogManager",
-           "SubstructureSearcher"
+           "SubstructureSearcher",
+           "UnitProcessor"
            ]
-__version__ = "1.2.6"
+__version__ = "1.3.0"
