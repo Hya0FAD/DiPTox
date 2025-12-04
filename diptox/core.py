@@ -5,6 +5,7 @@ from typing import Optional, List, Union, Tuple, Callable, Dict
 from functools import partial, wraps
 from tqdm import tqdm
 from rdkit import Chem
+from datetime import datetime
 import requests
 from .chem_processor import ChemistryProcessor
 from .web_request import WebService
@@ -49,8 +50,10 @@ class DiptoxPipeline:
         self._units_standardized = False
         self._dedup_unit_settings = None
         self.web_source = None
+        self._audit_log = []
 
-    def _check_initial_registration(self):
+    @staticmethod
+    def _check_initial_registration():
         """
         Check if user info is registered.
         Only triggers in interactive terminal mode AND not in GUI mode.
@@ -88,6 +91,36 @@ class DiptoxPipeline:
 
         except (EOFError, OSError):
             pass
+
+    def _record_step(self, step_name: str, df_before: Optional[pd.DataFrame], df_after: pd.DataFrame,
+                     details: str = ""):
+        """Records a processing step into the audit log."""
+        rows_before = len(df_before) if df_before is not None else 0
+        rows_after = len(df_after) if df_after is not None else 0
+
+        # Calculate delta. For initial load, before is 0, so delta is +rows.
+        # For filtering steps, delta is negative (rows removed).
+        if df_before is None:
+            delta = f"+{rows_after}"
+        else:
+            diff = rows_after - rows_before
+            delta = str(diff) if diff <= 0 else f"+{diff}"
+
+        entry = {
+            "Step": step_name,
+            "Timestamp": datetime.now().strftime("%H:%M:%S"),
+            "Rows Before": rows_before,
+            "Rows After": rows_after,
+            "Delta": delta,
+            "Details": details
+        }
+        self._audit_log.append(entry)
+
+    def get_history(self) -> pd.DataFrame:
+        """Returns the processing history as a DataFrame."""
+        if not self._audit_log:
+            return pd.DataFrame(columns=["Step", "Timestamp", "Rows Before", "Rows After", "Delta", "Details"])
+        return pd.DataFrame(self._audit_log)
 
     def load_data(self,
                   input_data: Union[str, List[str], pd.DataFrame],
@@ -145,6 +178,9 @@ class DiptoxPipeline:
         self.id_col = id_col
         self._units_standardized = False
         self._dedup_unit_settings = None
+
+        source_name = input_data if isinstance(input_data, str) else "Memory/List"
+        self._record_step("Data Loading", None, self.df, f"Source: {source_name}")
 
     def _ensure_dtypes_after_load(self) -> None:
         """
@@ -212,6 +248,7 @@ class DiptoxPipeline:
         :return: Processed DataFrame with results.
         """
         self._ensure_dtypes_after_load()
+        df_start = self.df.copy()
 
         # Build processing steps
         steps: List[Callable[[Chem.Mol], Optional[Chem.Mol]]] = []
@@ -316,6 +353,12 @@ class DiptoxPipeline:
         if progress_callback:
             progress_callback(total_rows, total_rows)
         self._preprocess_key = 1
+
+        valid_count = self.df['Is Valid'].sum()
+        invalid_count = total_rows - valid_count
+        pipeline_order = " -> ".join(step_descriptions)
+        self._record_step("Preprocessing", df_start, self.df,
+                          f"Valid: {valid_count}, Invalid: {invalid_count}. Order: {pipeline_order}")
         return self.df
 
     def _update_row(self, idx, is_valid: bool, comment: str, smiles: Optional[str]) -> None:
@@ -332,6 +375,7 @@ class DiptoxPipeline:
         :param standard_unit: The target unit to convert all values to.
         :param conversion_rules: A dictionary of conversion rules, e.g., {('mg/L', 'ug/L'): 'x * 1000'}.
         """
+        df_start = self.df.copy()
         if not self.target_col or not self.unit_col:
             logger.info("Target column or unit column not specified, skipping unit standardization.")
             self._units_standardized = True
@@ -378,6 +422,7 @@ class DiptoxPipeline:
             self.target_col = new_target_col
             self.unit_col = new_unit_col
             self._units_standardized = True
+            self._record_step("Unit Standardization", df_start, self.df, f"Target: {final_standard_unit}")
         except ValueError as e:
             logger.error(f"Unit standardization failed: {e}")
             raise
@@ -462,6 +507,7 @@ class DiptoxPipeline:
         """Execution deduplicator removal"""
         if not self.deduplicator:
             raise ValueError("Deduplicator not configured. Call config_deduplicator first.")
+        df_start = self.df.copy()
 
         if self._dedup_unit_settings and not self._units_standardized:
             logger.info("Implicitly running unit standardization as part of deduplication.")
@@ -469,6 +515,7 @@ class DiptoxPipeline:
                 standard_unit=self._dedup_unit_settings.get('standard_unit'),
                 conversion_rules=self._dedup_unit_settings.get('conversion_rules')
             )
+            df_start = self.df.copy()
 
         needs_standardization = False
         if self.target_col and self.unit_col and self.unit_col in self.df.columns:
@@ -484,6 +531,11 @@ class DiptoxPipeline:
         self.df = self.deduplicator.deduplicate(self.df, progress_callback=progress_callback)
         if self.target_col:
             self.target_col = self.target_col + "_new"
+
+        method_name = self.deduplicator.method
+        if self.deduplicator.log_transform:
+            method_name += " (Log10 Transformed)"
+        self._record_step("Deduplication", df_start, self.df, f"Method: {method_name}")
 
     @check_data_loaded
     def substructure_search(self, query_pattern: Union[str, List[str]],
@@ -647,6 +699,9 @@ class DiptoxPipeline:
             if 'name' in request:
                 self.name_col = 'name_from_web'
 
+            success_count = len(self.df[self.df['Query_Status'] == 'Success'])
+            self._record_step("Web Request", None, self.df, f"Found data for {success_count} rows")
+
         except requests.exceptions.RequestException as e:
             logger.error(f"An error occurred on the network, and the web request was interrupted: {e}")
             self.df.loc[pending_indices, 'Query_Status'] = 'Network Error'
@@ -684,6 +739,7 @@ class DiptoxPipeline:
                 count += 1
 
         logger.info(f"InChI calculation complete. Generated {count} InChI strings.")
+        self._record_step("InChI Calculation", None, self.df, f"Calculated {count} InChIs")
 
     @check_data_loaded
     def filter_by_atom_count(self,
@@ -698,6 +754,7 @@ class DiptoxPipeline:
         :param min_total_atoms: Minimum number of total atoms (inclusive).
         :param max_total_atoms: Maximum number of total atoms (inclusive).
         """
+        df_start = self.df.copy()
         if all(arg is None for arg in [min_heavy_atoms, max_heavy_atoms, min_total_atoms, max_total_atoms]):
             logger.warning("No filter criteria provided for filter_by_atom_count. No action taken.")
             return
@@ -730,6 +787,8 @@ class DiptoxPipeline:
         final_count = len(self.df)
         logger.info(
             f"Filtered by atom count. Initial: {initial_count}, Final: {final_count}, Removed: {initial_count - final_count}")
+        details = f"Heavy: {min_heavy_atoms}-{max_heavy_atoms}, Total: {min_total_atoms}-{max_total_atoms}"
+        self._record_step("Filter Atom Count", df_start, self.df, details)
 
     @check_data_loaded
     def save_results(self, output_path: str, columns: Optional[List[str]] = None) -> None:

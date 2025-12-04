@@ -976,7 +976,7 @@ elif step == "Export":
 
         if selected_cols:
             st.caption("Preview:")
-            st.dataframe(pipeline.df[selected_cols].head(5), use_container_width=None)
+            st.dataframe(pipeline.df[selected_cols].head(5), width='content')
 
             col_gen, col_dl, col_space = st.columns([1, 1, 4])
             msg_container = st.empty()
@@ -1010,6 +1010,15 @@ elif step == "Export":
 
 # --- Bottom: Data Preview ---
 st.divider()
+with st.expander("📜 Processing History (Audit Log)", expanded=False):
+    if pipeline.df is not None:
+        history_df = pipeline.get_history()
+        if not history_df.empty:
+            st.dataframe(history_df, width='stretch', hide_index=True)
+        else:
+            st.caption("No processing steps recorded yet.")
+    else:
+        st.caption("Load data to start tracking history.")
 st.subheader("📊 Data Preview (First 50 Rows)")
 if st.session_state.df_preview is not None:
     df_head = st.session_state.df_preview.head(50)

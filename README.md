@@ -1,6 +1,6 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.0-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.1-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
@@ -11,6 +11,8 @@ Handling heterogeneous experimental data often involves dealing with messy units
 -   **Automatic Conversion**: Built-in rules for **Concentration** (mass/vol, molar, parts-per), **Time**, **Pressure**, and **Temperature**.
 -   **Custom Formulas**: Define your own mathematical rules (e.g., `x * 1000` or `10**(-x)`) interactively via the GUI or script.
 -   **Log Transformation**: The deduplication module now supports optional `-log10` transformation (e.g., converting IC50 to pIC50) with a single parameter.
+-   **Enhanced Inorganic Filtering**: Significantly improved the `remove_inorganic` module using strict SMARTS pattern matching. It now accurately correctly identifies and removes complex inorganic species (e.g., ionic cyanides `[C-]#N`, carbonates, carbonyls) without misclassifying organic structures (like nitriles).
+-   **Step-by-Step Audit Log**: Introduced a comprehensive **History Tracking** system. DiPTox now automatically records a timeline of every operation (Loading, Preprocessing, Filtering, Deduplication, etc.), tracking the **timestamp**, **operation details**, and the **number of rows retained or removed (Delta)** at each stage. This feature is available in both the Python API (`get_history()`) and the GUI.
 
 ## DiPTox Community Check-in (Optional)
 To help us understand our user base and improve the software, DiPTox includes a one-time, optional survey on first use. 
@@ -128,6 +130,14 @@ DP.substructure_search(query_pattern, is_smarts=True)
 
 # Save results
 DP.save_results(output_path='file_path')
+
+# View Processing History (Audit Log)
+print(DP.get_history())
+# Output Example:
+#               Step Timestamp  Rows Before  Rows After   Delta                               Details
+# 0     Data Loading  10:00:01            0        1000   +1000                   Source: dataset.csv
+# 1    Preprocessing  10:00:05         1000         950     -50  Valid: 950, Invalid: 50. Order: ...
+# 2    Deduplication  10:00:08          950         800    -150       Method: auto (Log10 Transformed)
 ```
 
 ## Advanced Configuration

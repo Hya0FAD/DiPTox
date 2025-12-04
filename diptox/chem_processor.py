@@ -432,23 +432,17 @@ class ChemistryProcessor:
         if not has_carbon:
             return None
 
-        inorganic_patterns = [
-            'O=C=O',  # CO2
-            'C(=O)=O',  # CO2
-            '[C-]#[O+]',  # CO
-            'C#N',  # HCN
-            'S=C=S',  # CS2
-            'C(=S)=S',  # CS2
-            '[N-]=C=O',
-            '[S-]C#N',
-            '[O-]C#N',
-            '[C]',
-            'ICI',
-            'CN'
+        inorganic_smarts = [
+            '[#6]#[#7]', '[#8]=[#6]=[#8]', '[#6]#[#8]', '[#8]=[#6]=[#16]', '[#8]=[#6]=[#6]=[#6]=[#8]',
+            '[#8]~[#6](=[#8])~[#8]', '[#16]=[#6]=[#16]', '[#7]=[#6]=[#8]', '[#8]-[#6]#[#7]',
+            '[#16]-[#6]#[#7]', '[#7]=[#6]=[#16]', '[#34]-[#6]#[#7]', '[F,Cl,Br,I]-[#6]#[#7]',
+            '[#7]#[#6]-[#6]#[#7]', '[Cl]-[#6](=[#8])-[Cl]', '[Cl]-[#6](=[#16])-[Cl]', '[#6]',
         ]
-        for pattern in inorganic_patterns:
-            q = Chem.MolFromSmarts(pattern)
-            if q and Chem.MolToSmiles(mol) == Chem.MolToSmiles(q):
+        for smarts in inorganic_smarts:
+            pattern = Chem.MolFromSmarts(smarts)
+            if not pattern:
+                continue
+            if mol.GetNumAtoms() == pattern.GetNumAtoms() and mol.HasSubstructMatch(pattern):
                 return None
 
         return mol
