@@ -478,7 +478,8 @@ class DiptoxPipeline:
                             custom_method: Optional[Callable] = None,
                             standard_unit: Optional[str] = None,
                             conversion_rules: Optional[Dict[Tuple[str, str], str]] = None,
-                            log_transform: bool = False) -> None:
+                            log_transform: bool = False,
+                            dropna_conditions: bool = False) -> None:
         """
         Configure the deduplicator device
         :param condition_cols: Data condition column (e.g. temperature, pressure, etc.)
@@ -490,6 +491,7 @@ class DiptoxPipeline:
         :param standard_unit: The target unit to standardize to before deduplication.
         :param conversion_rules: A dictionary of rules for unit conversion.
         :param log_transform: If True, applies a -log10 transformation to the target column.
+        :param dropna_conditions: If True, drops rows with missing condition values. If False, groups them.
         """
         if standard_unit or conversion_rules:
             self._dedup_unit_settings = {'standard_unit': standard_unit, 'conversion_rules': conversion_rules}
@@ -499,7 +501,7 @@ class DiptoxPipeline:
         self.deduplicator = DataDeduplicator(
             smiles_col=smiles_col, target_col=self.target_col, condition_cols=condition_cols,
             data_type=data_type, method=method, p_threshold=p_threshold, priority=priority,
-            custom_method=custom_method, log_transform=log_transform
+            custom_method=custom_method, log_transform=log_transform, dropna_conditions=dropna_conditions
         )
 
     @check_data_loaded

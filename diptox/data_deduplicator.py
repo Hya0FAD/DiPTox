@@ -18,7 +18,8 @@ class DataDeduplicator:
                  p_threshold: float = 0.05,
                  priority: Optional[List[str]] = None,
                  custom_method: Optional[Callable[[pd.Series], Tuple[pd.Series, str]]] = None,
-                 log_transform: bool = False):
+                 log_transform: bool = False,
+                 dropna_conditions: bool = False):
         """
         :param smiles_col: The name of the SMILES column
         :param target_col: The name of the target value column (optional)
@@ -29,6 +30,7 @@ class DataDeduplicator:
         :param priority: List of values in descending order of priority for discrete deduplication
         :param custom_method: Custom method of data deduplication
         :param log_transform: If True, applies a -log10 transformation to the target column before continuous deduplication.
+        :param dropna_conditions: If True, rows with NaN in condition columns are dropped.
         """
         self.smiles_col = smiles_col
         self.target_col = target_col
@@ -39,6 +41,7 @@ class DataDeduplicator:
         self._p_threshold = p_threshold
         self.priority_list = priority
         self.log_transform = log_transform
+        self.dropna_conditions = dropna_conditions
 
         if custom_method and not callable(custom_method):
             raise ValueError("custom_outlier_handler must be a callable function")
@@ -70,7 +73,7 @@ class DataDeduplicator:
             df[self.target_col] = -np.log10(pd.to_numeric(df[self.target_col], errors='coerce'))
 
         group_keys = [self.smiles_col] + self.condition_cols
-        grouped = df.groupby(group_keys, group_keys=False, sort=False)
+        grouped = df.groupby(group_keys, group_keys=False, sort=False, dropna=self.dropna_conditions)
 
         if self.data_type == 'smiles':
             return self._process_without_target(grouped)

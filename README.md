@@ -11,6 +11,7 @@ Handling heterogeneous experimental data often involves dealing with messy units
 -   **Automatic Conversion**: Built-in rules for **Concentration** (mass/vol, molar, parts-per), **Time**, **Pressure**, and **Temperature**.
 -   **Custom Formulas**: Define your own mathematical rules (e.g., `x * 1000` or `10**(-x)`) interactively via the GUI or script.
 -   **Log Transformation**: The deduplication module now supports optional `-log10` transformation (e.g., converting IC50 to pIC50) with a single parameter.
+-   **Flexible NaN Handling in Deduplication**: Introduced a control for missing values in condition columns. The default behavior is now set to retain rows with missing conditions (treating *NaN* as a valid group) instead of dropping them, preventing unintentional data loss.
 -   **Enhanced Inorganic Filtering**: Significantly improved the `remove_inorganic` module using strict SMARTS pattern matching. It now accurately correctly identifies and removes complex inorganic species (e.g., ionic cyanides `[C-]#N`, carbonates, carbonyls) without misclassifying organic structures (like nitriles).
 -   **Step-by-Step Audit Log**: Introduced a comprehensive **History Tracking** system. DiPTox now automatically records a timeline of every operation (Loading, Preprocessing, Filtering, Deduplication, etc.), tracking the **timestamp**, **operation details**, and the **number of rows retained or removed (Delta)** at each stage. This feature is available in both the Python API (`get_history()`) and the GUI.
 
@@ -118,7 +119,7 @@ DP.preprocess(
 # Configure deduplication and unit standardization
 conversion_rules = {('g/L', 'mg/L'): 'x * 1000', 
                     ('ug/L', 'mg/L'): 'x / 1000',}
-DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority, standard_unit, conversion_rules, log_transform)
+DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority, standard_unit, conversion_rules, log_transform, dropna_conditions)
 DP.data_deduplicate()
 
 # Configure web queries

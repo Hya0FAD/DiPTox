@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.1-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.2-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">
@@ -13,6 +13,7 @@
 -   **自动转换**：内置了针对 **浓度**（质量/体积、摩尔、比例）、**时间**、**压力** 和 **温度** 的常用转换规则。
 -   **自定义公式**：支持通过 GUI 或脚本交互式定义数学转换规则（例如 `x * 1000` 或 `10**(-x)`）。
 -   **Log 变换**：去重模块现在支持通过单一参数对目标值进行可选的 `-log10` 变换（例如将 IC50 转换为 pIC50）。
+-   **去重 NaN 处理**：新增了针对条件列中缺失值的处理控制选项。默认设置已改为保留包含缺失条件的行（将 *NaN* 视为有效的分组），而非将其删除，避免数据丢失情况。
 -   **增强无机过滤**：通过严格的 SMARTS 模式匹配改进了 `remove_inorganic` 模块。现在能够准确识别并移除复杂的无机物质（例如离子氰化物 `[C-]#N`、碳酸盐、羰基），同时不会将有机结构（如腈类）误判为无机物质。
 -   **分步审计日志**：引入了全面的**历史追踪**。DiPTox 现在会自动记录每个操作（加载、预处理、过滤、去重等）的时间线，追踪每个阶段的**时间戳**、**操作详情**以及**保留或移除的行数（差值）**。此功能在 Python API（`get_history()`）和图形用户界面中均可使用。
 

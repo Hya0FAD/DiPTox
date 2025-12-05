@@ -784,8 +784,20 @@ elif step == "Deduplication":
         st.warning("Please load data first.")
     else:
         avail_cols = list(pipeline.df.columns)
+        c_cond_main, c_cond_opt = st.columns([3, 1])
 
-        condition_cols = st.multiselect("Condition Columns (e.g., pH, Temperature)", avail_cols)
+        with c_cond_main:
+            condition_cols = st.multiselect("Condition Columns (e.g., pH, Temperature)", avail_cols)
+
+        with c_cond_opt:
+            dropna_selection = st.selectbox(
+                "Drop NaN Conditions",
+                options=["False", "True"],
+                index=0,
+                help="Drop rows with missing condition values."
+            )
+            dropna_conditions = False if dropna_selection == "False" else True
+
         data_type = st.selectbox("Data Type", ["continuous", "discrete", "smiles"])
 
         method = "auto"
@@ -827,7 +839,8 @@ elif step == "Deduplication":
                     data_type=data_type,
                     method=method,
                     priority=priority_list,
-                    log_transform=log_transform
+                    log_transform=log_transform,
+                    dropna_conditions=dropna_conditions
                 )
                 pipeline.dataset_deduplicate()
                 final_target_col = pipeline.target_col
