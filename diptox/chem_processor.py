@@ -356,7 +356,17 @@ class ChemistryProcessor:
 
         stripped = self.remover.StripMol(mol)
         if stripped.GetNumAtoms() == 0:
-            return None
+            frags = Chem.GetMolFrags(mol, asMols=True)
+            best_frag = sorted(
+                frags,
+                key=lambda f: (
+                    f.GetNumHeavyAtoms(),
+                    sum(1 for a in f.GetAtoms() if a.GetAtomicNum() == 6),
+                    Chem.MolToSmiles(f, canonical=True)
+                ),
+                reverse=True
+            )[0]
+            return best_frag
 
         fragments = Chem.GetMolFrags(stripped, asMols=True)
         if len(fragments) == 1:
@@ -389,7 +399,16 @@ class ChemistryProcessor:
             if not any(frag.HasSubstructMatch(solvent) and solvent.HasSubstructMatch(frag) for solvent in self._solvents)
         ]
         if not non_solvent:
-            return None
+            best_frag = sorted(
+                fragments,
+                key=lambda f: (
+                    f.GetNumHeavyAtoms(),
+                    sum(1 for a in f.GetAtoms() if a.GetAtomicNum() == 6),
+                    Chem.MolToSmiles(f, canonical=True)
+                ),
+                reverse=True
+            )[0]
+            return best_frag
 
         first_smiles = Chem.MolToSmiles(non_solvent[0], canonical=True)
         all_identical = all(

@@ -1,6 +1,6 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.1-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.3-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
