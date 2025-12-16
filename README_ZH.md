@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.3-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.4-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">
@@ -8,14 +8,38 @@
 
 **DiPTox** 是一个专为分子数据集的稳健预处理、标准化及多源数据整合而设计的 Python 工具包，专注于计算毒理学工作流。
 
-## v1.3 新特性：单位标准化与转换
-处理异构实验数据时，经常需要应对混乱的单位（如 *mg/L, ug/mL, M, ppm, %*）。DiPTox v1.3 引入了 **单位处理器 (Unit Processor)** 来自动化这一过程：
--   **自动转换**：内置了针对 **浓度**（质量/体积、摩尔、比例）、**时间**、**压力** 和 **温度** 的常用转换规则。
--   **自定义公式**：支持通过 GUI 或脚本交互式定义数学转换规则（例如 `x * 1000` 或 `10**(-x)`）。
--   **Log 变换**：去重模块现在支持通过单一参数对目标值进行可选的 `-log10` 变换（例如将 IC50 转换为 pIC50）。
--   **去重 NaN 处理**：新增了针对条件列中缺失值的处理控制选项。默认设置已改为保留包含缺失条件的行（将 *NaN* 视为有效的分组），而非将其删除，避免数据丢失情况。
--   **增强无机过滤**：通过严格的 SMARTS 模式匹配改进了 `remove_inorganic` 模块。现在能够准确识别并移除复杂的无机物质（例如离子氰化物 `[C-]#N`、碳酸盐、羰基），同时不会将有机结构（如腈类）误判为无机物质。
--   **分步审计日志**：引入了全面的**历史追踪**。DiPTox 现在会自动记录每个操作（加载、预处理、过滤、去重等）的时间线，追踪每个阶段的**时间戳**、**操作详情**以及**保留或移除的行数（差值）**。此功能在 Python API（`get_history()`）和图形用户界面中均可使用。
+## v1.3 新特性：
+# ✨ 核心新功能
+
+-   **单位标准化系统**：
+    -   **自动转换**：内置了针对 **浓度**（质量/体积、摩尔、比例）、**时间**、**压力** 和 **温度** 的常用转换规则。
+    -   **自定义公式**：支持通过 GUI 或脚本交互式定义数学转换规则（例如 `x * 1000` 或 `10**(-x)`）。
+    -   **统一化**：轻松将异构的实验数据标准化为单一目标单位。
+
+-   **全流程历史追踪**：
+    -   引入了 **审计日志 (Audit Log)** 系统，自动记录每个操作（加载、预处理、过滤、去重等）。
+    -   详细追踪每个阶段的 **时间戳**、**操作详情** 以及保留或移除的行数变化（**Delta**）。
+    -   该功能在 Python API (`get_history()`) 和 GUI 可视化界面中均可使用。
+
+-   **高级去重控制**：
+    -   **Log 变换**：去重模块现在支持通过单一参数对目标值进行可选的 `-log10` 变换（例如将 IC50 转换为 pIC50）。
+    -   **灵活的 NaN 处理**：新增控制选项，允许保留条件列中存在缺失值的行（将 *NaN* 视为一个独立分组），防止数据意外丢失。
+
+### 🛠️ 改进与修复
+
+-   **更健壮的数据加载 (SDF/MOL/SMI)**：
+    -   **SDF/MOL 二进制解析**：切换至二进制流读取模式，解决编码崩溃问题（如 Windows 环境下常见的 `utf-8` 与 `latin-1` 解码错误）。
+    -   **自动 SMILES 生成**：对于 SDF/MOL 文件，结构块解析分子并生成 SMILES，即使文件属性中缺少具体的 "SMILES" 列也能加载。
+    -   **表头控制**：在 GUI 中为 `.smi` 、 `.csv` 和 `.txt` 文件添加了 **"Has Header?"（包含表头？）** 开关，支持精确控制解析方式。
+    -   **智能列映射**：修复了在无表头文件中通过索引（如 `0`, `1`）映射列时可能导致数据被错误覆盖的逻辑问题。
+
+-   **增强的无机物过滤**：
+    -   升级 `remove_inorganic` 模块，采用严格的 SMARTS 模式匹配。
+    -   现在能准确识别并移除复杂的无机物质（如离子氰化物 `[C-]#N`、碳酸盐、羰基），同时避免将有机结构（如腈类）误判为无机物。
+
+-   **GUI 体验优化**：
+    -   优化了“文件上传”工作流，增加了特定文件类型的智能提示（例如 SDF 自动解析提示）。
+    -   列选择逻辑现在会根据文件是否有表头进行实时更新。
 
 ## DiPTox 社区登记 (可选)
 为了更好地了解用户群体并改进软件，DiPTox 在首次使用时会提供一个一次性的、可选的用户信息登记。

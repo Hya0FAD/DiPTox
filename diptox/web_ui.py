@@ -1,6 +1,12 @@
 # diptox/web_ui.py
+import tempfile
+from pathlib import Path
+USER_TEMP_DIR = Path.home() / ".diptox" / "temp"
+USER_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
 import os
 os.environ["DIPTOX_GUI_MODE"] = "true"
+
 import streamlit as st
 import pandas as pd
 import threading
@@ -149,122 +155,163 @@ if step == "Data Loading":
     tab_file, tab_text = st.tabs(["Upload File", "Paste SMILES List"])
 
     with tab_file:
-        st.markdown("Supports: `.csv`, `.xlsx`, `.xls`, `.txt`, `.sdf`, `.smi`")
+        st.markdown("Supports: `.csv`, `.xlsx`, `.xls`, `.txt`, `.sdf`, `.smi`, `.mol`")
         st.warning("⚠️ Note: For files larger than 200MB, please use the Python script directly.")
 
-        uploaded_file = st.file_uploader("Upload Dataset", type=['csv', 'xlsx', 'xls', 'txt', 'smi', 'sdf'])
+        uploaded_file = st.file_uploader("Upload Dataset", type=['csv', 'xlsx', 'xls', 'txt', 'smi', 'sdf', 'mol'])
 
         if uploaded_file:
-            temp_filename = f"temp_upload_{uploaded_file.name}"
+            current_pid = os.getpid()
+            file_id = f"{current_pid}_{uploaded_file.name}_{uploaded_file.size}"
+            suffix = os.path.splitext(uploaded_file.name)[1].lower()
 
-            with open(temp_filename, "wb") as f:
-                f.write(uploaded_file.getbuffer())
+            if "current_file_id" not in st.session_state:
+                st.session_state["current_file_id"] = None
+            if "current_temp_path" not in st.session_state:
+                st.session_state["current_temp_path"] = None
 
-            detected_cols = []
-            selected_sheet = None
-            file_ext = os.path.splitext(uploaded_file.name)[1].lower()
-
-            try:
-                # === 1. Excel ===
-                if file_ext in ['.xlsx', '.xls']:
-                    with pd.ExcelFile(temp_filename) as xl:
-                        sheet_names = xl.sheet_names
-                        if len(sheet_names) > 1:
-                            st.info(f"Multi-sheet Excel detected.")
-                            selected_sheet = st.selectbox("Select Excel Sheet:", sheet_names)
-                        else:
-                            selected_sheet = sheet_names[0]
-
-                        df_preview = pd.read_excel(temp_filename, sheet_name=selected_sheet, nrows=5)
-                        detected_cols = list(df_preview.columns)
-
-                # === 2. SDF ===
-                elif file_ext == '.sdf':
-                    from rdkit import Chem
-
-                    suppl = Chem.SDMolSupplier(temp_filename)
-                    if len(suppl) > 0:
-                        mol = suppl[0]
-                        if mol:
-                            detected_cols = list(mol.GetPropsAsDict().keys())
-                    else:
-                        st.warning("Empty SDF file?")
-
-                # === 3. CSV/TXT/SMI ===
-                else:
-                    sep = '\t' if file_ext in ['.txt', '.smi'] else ','
+            if st.session_state["current_file_id"] != file_id:
+                old_path = st.session_state["current_temp_path"]
+                if old_path and os.path.exists(old_path):
                     try:
-                        df_preview = pd.read_csv(temp_filename, sep=sep, nrows=5)
-                        detected_cols = list(df_preview.columns)
+                        os.remove(old_path)
                     except:
-                        df_preview = pd.read_csv(temp_filename, nrows=5)
-                        detected_cols = list(df_preview.columns)
+                        pass
+                with tempfile.NamedTemporaryFile(
+                    dir=str(USER_TEMP_DIR),
+                    delete=False,
+                    suffix=suffix,
+                    prefix=f"tmp_{current_pid}_"
+                ) as tmp_file:
+                    tmp_file.write(uploaded_file.getbuffer())
+                    st.session_state["current_temp_path"] = tmp_file.name
+                st.session_state["current_file_id"] = file_id
 
-                detected_cols = [str(c) for c in detected_cols]
-
-            except Exception as e:
-                st.error(f"Failed to parse headers: {e}")
+            temp_filename = st.session_state["current_temp_path"]
+            if temp_filename and os.path.exists(temp_filename):
+                file_ext = suffix
                 detected_cols = []
-
-            if detected_cols:
-                st.success(f"✅ Detected {len(detected_cols)} columns.")
-
-                options_with_none = ["(None)"] + detected_cols
-
+                selected_sheet = None
+                has_header = True
                 with st.expander("Column Configuration", expanded=True):
-                    st.caption("Map your file columns to DiPTox fields. All fields are optional.")
-
-                    c1, c2 = st.columns(2)
-                    # 1. SMILES Column
-                    smiles_col = c1.selectbox("SMILES Column (Optional)", options_with_none, index=0)
-                    # 2. Target Column
-                    name_col = c2.selectbox("Name Column (Optional)", options_with_none, index=0)
-
-                    c3, c4 = st.columns(2)
-                    # 3. CAS Column
-                    cas_col = c3.selectbox("CAS Column (Optional)", options_with_none, index=0)
-                    # 4. ID Column
-                    id_col = c4.selectbox("ID Column (for .smi/.sdf)", options_with_none, index=0)
-
-                    c5, c6 = st.columns(2)
-                    # 5. Name Column
-                    target_col = c5.selectbox("Target Column (Optional)", options_with_none, index=0)
-                    # 6. Unit Column
-                    unit_col = c6.selectbox("Unit Column (Optional)", options_with_none, index=0)
-
-            else:
-                st.warning("Could not detect columns automatically. Please enter manually.")
-                with st.expander("Column Configuration", expanded=True):
-                    c1, c2 = st.columns(2)
-                    smiles_col = c1.text_input("SMILES Column (Optional)", value="")
-                    name_col = c2.text_input("Name Column (Optional)", value="")
-                    c3, c4 = st.columns(2)
-                    cas_col = c3.text_input("CAS Column (Optional)", value="")
-                    id_col = c4.text_input("ID Column (for .smi)", value="")
-                    c5, c6 = st.columns(2)
-                    target_col = c5.text_input("Target Column (Optional)", value="")
-                    unit_col = c6.text_input("Unit Column (Optional)", value="")
-
+                    if file_ext in ['.sdf', '.mol']:
+                        st.info(
+                            f"💡 **{file_ext.upper()} File Detected**: You can leave the **'SMILES Column'** as **(None)**. "
+                            "Molecules will be automatically parsed from the structure block.")
+                    if file_ext in ['.csv', '.txt', '.smi']:
+                        has_header = st.checkbox("File has a header row?", value=True,
+                                                 help="Uncheck this if the first row contains data, not column names.")
+                    try:
+                        # === 1. Excel ===
+                        if file_ext in ['.xlsx', '.xls']:
+                            with pd.ExcelFile(temp_filename) as xl:
+                                sheet_names = xl.sheet_names
+                                if len(sheet_names) > 1:
+                                    st.info(f"Multi-sheet Excel detected.")
+                                    selected_sheet = st.selectbox("Select Excel Sheet:", sheet_names)
+                                else:
+                                    selected_sheet = sheet_names[0]
+                                df_preview = pd.read_excel(temp_filename, sheet_name=selected_sheet, nrows=5)
+                                detected_cols = list(df_preview.columns)
+                        # === 2. SDF ===
+                        elif file_ext in ['.sdf', '.mol']:
+                            from rdkit import Chem
+                            suppl = None
+                            try:
+                                suppl = Chem.ForwardSDMolSupplier(open(temp_filename, 'rb'))
+                                mol = next(suppl) if suppl else None
+                            except:
+                                mol = None
+                            if mol:
+                                detected_cols = list(mol.GetPropsAsDict().keys())
+                            else:
+                                st.warning("Could not preview SDF properties (File might be empty or encrypted).")
+                                detected_cols = []
+                        # === 3. CSV/TXT/SMI ===
+                        else:
+                            header_arg = 0 if has_header else None
+                            sep = '\t' if file_ext in ['.txt', '.smi'] else ','
+                            try:
+                                df_preview = pd.read_csv(temp_filename, sep=sep, nrows=5, header=header_arg)
+                                detected_cols = list(df_preview.columns)
+                            except:
+                                try:
+                                    df_preview = pd.read_csv(temp_filename, nrows=5, header=header_arg)
+                                    detected_cols = list(df_preview.columns)
+                                except:
+                                    detected_cols = []
+                        detected_cols = [str(c) for c in detected_cols]
+                    except Exception as e:
+                        st.error(f"Failed to parse headers: {e}")
+                        detected_cols = []
+                    if detected_cols:
+                        st.success(f"✅ Detected {len(detected_cols)} columns.")
+                        options_with_none = ["(None)"] + detected_cols
+                        c1, c2 = st.columns(2)
+                        # 1. SMILES Column
+                        smiles_col = c1.selectbox("SMILES Column (Optional)", options_with_none, index=0)
+                        # 2. Target Column
+                        name_col = c2.selectbox("Name Column (Optional)", options_with_none, index=0)
+                        c3, c4 = st.columns(2)
+                        # 3. CAS Column
+                        cas_col = c3.selectbox("CAS Column (Optional)", options_with_none, index=0)
+                        # 4. ID Column
+                        id_col = c4.selectbox("ID Column (Optional)", options_with_none, index=0)
+                        c5, c6 = st.columns(2)
+                        # 5. Name Column
+                        target_col = c5.selectbox("Target Column (Optional)", options_with_none, index=0)
+                        # 6. Unit Column
+                        unit_col = c6.selectbox("Unit Column (Optional)", options_with_none, index=0)
+                    else:
+                        st.warning("Could not detect columns automatically. Please enter manually.")
+                        with st.expander("Column Configuration", expanded=True):
+                            c1, c2 = st.columns(2)
+                            smiles_col = c1.text_input("SMILES Column (Optional)", value="")
+                            name_col = c2.text_input("Name Column (Optional)", value="")
+                            c3, c4 = st.columns(2)
+                            cas_col = c3.text_input("CAS Column (Optional)", value="")
+                            id_col = c4.text_input("ID Column (for .smi)", value="")
+                            c5, c6 = st.columns(2)
+                            target_col = c5.text_input("Target Column (Optional)", value="")
+                            unit_col = c6.text_input("Unit Column (Optional)", value="")
+                    current_selections = {
+                        "SMILES Column": smiles_col, "Name Column": name_col, "CAS Column": cas_col,
+                        "ID Column": id_col, "Target Column": target_col, "Unit Column": unit_col
+                    }
+                    active_selections = {}
+                    for label, val in current_selections.items():
+                        if val and val != "(None)" and str(val).strip() != "":
+                            active_selections[label] = val
+                    seen_cols = {}
+                    dupe_warnings = []
+                    for label, col_name in active_selections.items():
+                        if col_name in seen_cols:
+                            prev_label = seen_cols[col_name]
+                            dupe_warnings.append(
+                                f"• **{prev_label}** and **{label}** are both mapped to column: `{col_name}`")
+                        else:
+                            seen_cols[col_name] = label
+                    if dupe_warnings:
+                        st.warning("⚠️ **Duplicate Column Assignment Detected**:\n" + "\n".join(dupe_warnings))
             if st.button("Load Data from File", type="primary"):
                 try:
                     kwargs = {}
                     if selected_sheet:
                         kwargs['sheet_name'] = selected_sheet
-
+                    if file_ext in ['.csv', '.txt', '.smi']:
+                        kwargs['header'] = 0 if has_header else None
                     def clean_col_name(val):
                         if val == "(None)":
                             return None
                         if isinstance(val, str) and val.strip() == "":
                             return None
                         return val
-
                     final_smiles = clean_col_name(smiles_col)
                     final_target = clean_col_name(target_col)
                     final_unit = clean_col_name(unit_col)
                     final_cas = clean_col_name(cas_col)
                     final_name = clean_col_name(name_col)
                     final_id = clean_col_name(id_col)
-
                     pipeline.load_data(
                         input_data=temp_filename,
                         smiles_col=final_smiles,
@@ -275,22 +322,19 @@ if step == "Data Loading":
                         id_col=final_id,
                         **kwargs
                     )
-
-                    track_user_cols([final_smiles, final_target, final_unit, final_cas, final_name, final_id])
-
+                    cols_to_track = [
+                        pipeline.smiles_col,
+                        pipeline.target_col,
+                        pipeline.unit_col,
+                        pipeline.cas_col,
+                        pipeline.name_col,
+                        pipeline.id_col
+                    ]
+                    track_user_cols(cols_to_track)
                     update_preview()
                     st.success(f"Successfully loaded {len(pipeline.df)} records!")
-
                 except Exception as e:
                     st.error(f"Error loading data: {str(e)}")
-                finally:
-                    try:
-                        import gc
-                        gc.collect()
-                        if os.path.exists(temp_filename):
-                            os.remove(temp_filename)
-                    except:
-                        pass
 
     with tab_text:
         st.info("Paste a list of SMILES strings, one per line.")

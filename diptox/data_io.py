@@ -57,6 +57,16 @@ class DataHandler:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File does not exist: {file_path}")
 
+        loader_kwargs = kwargs.copy()
+        loader_kwargs.update({
+            'smiles_col': smiles_col,
+            'cas_col': cas_col,
+            'name_col': name_col,
+            'target_col': target_col,
+            'unit_col': unit_col,
+            'inchikey_col': inchikey_col,
+            'id_col': id_col
+        })
         df = None
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path, **kwargs)
@@ -90,12 +100,12 @@ class DataHandler:
                                 print(f"Invalid sheet name. Please enter a valid sheet name or number.")
         elif file_path.endswith('.txt'):
             df = pd.read_csv(file_path, sep='\t', **kwargs)
-        elif file_path.endswith('.sdf'):
-            df = DataHandler._load_sdf(file_path=file_path, smiles_col=smiles_col, target_col=target_col)
+        elif file_path.endswith(('.sdf', '.mol')):
+            df = DataHandler._load_sdf(file_path=file_path, **loader_kwargs)
         elif file_path.endswith('.smi'):
-            df = DataHandler._load_smi(file_path=file_path, smiles_col=smiles_col, id_col=id_col, **kwargs)
+            df = DataHandler._load_smi(file_path=file_path, **loader_kwargs)
         else:
-            logger.error("Only the .csv/.xlsx/.xls/.txt file format is supported")
+            logger.error("Only the .csv/.xlsx/.xls/.txt/.sdf/.mol/.smi file format is supported")
             raise ValueError("Unsupported file format")
 
         if df is None:
@@ -106,24 +116,16 @@ class DataHandler:
             if numeric_col.isnull().sum() > 0 and df[col].notnull().sum() > 0:
                 df[col] = df[col].astype("string")
 
-        if smiles_col is not None and smiles_col not in df.columns:
-            logger.error(f"SMILES column '{smiles_col}' does not exist in the file")
-            raise
-        if cas_col is not None and cas_col not in df.columns:
-            logger.error(f"CAS column '{cas_col}' does not exist in the file")
-            raise
-        if inchikey_col is not None and inchikey_col not in df.columns:
-            logger.error(f"Inchikey column '{inchikey_col}' does not exist in the file")
-            raise
-        if target_col is not None and target_col not in df.columns:
-            logger.error(f"The target value column '{target_col}' does not exist in the file")
-            raise
-        if unit_col is not None and unit_col not in df.columns:
-            logger.warning(f"The unit column '{unit_col}' does not exist in the file")
-            raise
-        if name_col is not None and name_col not in df.columns:
-            logger.error(f"The name column '{name_col}' does not exist in the file")
-            raise
+        check_map = {
+            'SMILES': smiles_col, 'CAS': cas_col, 'Name': name_col, 'ID': id_col,
+            'Target': target_col, 'Unit': unit_col, 'InChIKey': inchikey_col
+        }
+        for label, col_name in check_map.items():
+            if col_name and col_name not in df.columns:
+                if file_path.endswith('.sdf') and label == 'SMILES':
+                    continue
+                logger.error(f"{label} column '{col_name}' does not exist in the file. Available: {list(df.columns)}")
+                raise KeyError(f"Missing column: {col_name}")
 
         return df
 
@@ -156,47 +158,90 @@ class DataHandler:
         return df.copy()
 
     @staticmethod
-    def _load_sdf(file_path: str, smiles_col: str, target_col: str) -> pd.DataFrame:
+    def _load_sdf(file_path: str, smiles_col: Optional[str] = None, **kwargs) -> pd.DataFrame:
+        from rdkit import Chem
+        effective_smiles_col = smiles_col if smiles_col else 'smiles'
+
+        def parse_mol_supplier(supplier):
+            data_rows = []
+            for mol in supplier:
+                if mol is None:
+                    continue
+                try:
+                    props = mol.GetPropsAsDict()
+                    smi = Chem.MolToSmiles(mol, isomericSmiles=True)
+                    if effective_smiles_col not in props:
+                        props[effective_smiles_col] = smi
+                    data_rows.append(props)
+                except Exception:
+                    continue
+            return pd.DataFrame(data_rows)
+
+        df = None
         try:
-            from rdkit import Chem
-            from rdkit.Chem import PandasTools
-            df = PandasTools.LoadSDF(file_path, removeHs=False, sanitize=False)
-            original_columns = df.columns.tolist()
-            if smiles_col:
-                if smiles_col not in df.columns:
-                    available = [c for c in original_columns if 'smiles' in c]
-                    logger.error(f"'{smiles_col}' field not found in SDF, SMILES field available: {available}")
-                    raise
-
-            if target_col and target_col not in df.columns:
-                logger.warning(f"target column '{target_col}' does not exist, available fields: {original_columns}")
-
-            return df.rename(columns={smiles_col.lower(): 'smiles'})
+            with open(file_path, 'rb') as f:
+                suppl = Chem.ForwardSDMolSupplier(f, removeHs=False, sanitize=True)
+                df = parse_mol_supplier(suppl)
         except Exception as e:
-            logger.error(f"The SDF file fails to be parsed: {str(e)}")
+            logger.error(f"Binary read failed: {str(e)}")
+            try:
+                suppl = Chem.SDMolSupplier(file_path, removeHs=False, sanitize=True)
+                df = parse_mol_supplier(suppl)
+            except Exception as final_e:
+                logger.error(f"All parsing attempts failed: {str(final_e)}")
+                raise
+
+        if df is None or df.empty:
+            raise ValueError(
+                "Failed to parse molecules from the SDF file. The file might be corrupted or encoded strangely.")
+
+        return df
 
     @staticmethod
     def _load_smi(file_path: str,
                   smiles_col: str = 'smiles',
                   id_col: Optional[str] = None,
                   **kwargs) -> pd.DataFrame:
+        diptox_args = ['cas_col', 'name_col', 'target_col', 'unit_col', 'inchikey_col']
+        for arg in diptox_args:
+            kwargs.pop(arg, None)
         try:
             with open(file_path) as f:
                 first_line = f.readline()
             sep = '\t' if '\t' in first_line else ' '
 
-            if smiles_col in first_line:
-                header = 0
+            if 'header' in kwargs:
+                header_infer = kwargs.pop('header')
+            elif smiles_col and smiles_col in first_line:
+                header_infer = 0
             else:
-                header = None
+                header_infer = None
 
-            df = pd.read_csv(file_path,
-                             sep=sep,
-                             header=header,
-                             names=[col for col in [smiles_col, id_col] if col is not None][:len(first_line.split(sep))],
-                             **kwargs)
+            df = pd.read_csv(file_path, sep=sep, header=header_infer, **kwargs)
 
-            df[smiles_col] = df[smiles_col].str.strip()
+            if header_infer is None:
+                current_cols_str = [str(c) for c in df.columns]
+
+                should_rename_smiles = True
+                if smiles_col and str(smiles_col) in current_cols_str:
+                    should_rename_smiles = False
+
+                should_rename_id = True
+                if id_col and str(id_col) in current_cols_str:
+                    should_rename_id = False
+
+                new_columns = list(df.columns)
+                if should_rename_smiles and len(new_columns) >= 1 and smiles_col:
+                    new_columns[0] = smiles_col
+
+                if should_rename_id and len(new_columns) >= 2 and id_col:
+                    new_columns[1] = id_col
+
+                df.columns = new_columns
+            df.columns = [str(c) for c in df.columns]
+
+            if smiles_col and str(smiles_col) in df.columns:
+                df[str(smiles_col)] = df[str(smiles_col)].astype(str).str.strip()
             return df
 
         except Exception as e:

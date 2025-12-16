@@ -144,6 +144,7 @@ class DiptoxPipeline:
         :param id_col: The column name for SMI file's SMILES ID (optional)
         :param sep: CSV file delimiter.
         """
+        user_specified_smiles = smiles_col
         df = self.data_handler.load_data(input_data=input_data, smiles_col=smiles_col, cas_col=cas_col,
                                          target_col=target_col, unit_col=unit_col, inchikey_col=inchikey_col,
                                          id_col=id_col, **kwargs)
@@ -169,7 +170,14 @@ class DiptoxPipeline:
             df['Is Valid'] = pd.Series(False, index=df.index, dtype="boolean")
 
         self.df = df
-        self.smiles_col = smiles_col
+        if user_specified_smiles:
+            self.smiles_col = user_specified_smiles
+        else:
+            if isinstance(input_data, str) and input_data.lower().endswith('.sdf'):
+                self.smiles_col = 'smiles'
+                logger.info("SDF file detected: 'smiles' column automatically assigned.")
+            else:
+                self.smiles_col = None
         self.cas_col = cas_col
         self.name_col = name_col
         self.target_col = target_col

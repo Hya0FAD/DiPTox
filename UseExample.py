@@ -18,7 +18,7 @@
 # - ctx-python (for CompTox integration)
 # - chemspipy (for ChemSpider integration)
 
-# Latest Version: 1.3.3 (2025.12.12)
+# Latest Version: 1.3.4 (2025.12.16)
 
 
 # ==============================================================================
@@ -34,7 +34,8 @@ a.load_data(input_data=r"path/to/your/FileName.xlsx", # Supports .xls, .csv, .tx
             target_col='Target_Column_Name', 
             unit_col='Unit_Column_Name',
             cas_col='CAS_Column_Name', 
-            id_col='ID_Column_Name') # Note: smiles_col, target_col, cas_col, id_col are all optional.
+            id_col='ID_Column_Name',
+            header=0) # Note: smiles_col, target_col, cas_col, id_col are all optional.
 a.preprocess()
 a.standardize_units(standard_unit='mg/L')
 a.config_deduplicator(data_type='discrete', # 'smiles', 'discrete' or 'continuous'

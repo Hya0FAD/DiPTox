@@ -1,19 +1,43 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.3-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.4-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
 **DiPTox** is a Python toolkit designed for the robust preprocessing, standardization, and multi-source data integration of molecular datasets, with a focus on computational toxicology workflows.
 
-## New in v1.3: Unit Standardization & Transformation
-Handling heterogeneous experimental data often involves dealing with messy units (e.g., *mg/L, ug/mL, M, ppm, %*). DiPTox v1.3 introduces **Unit Processor** to automate this process:
--   **Automatic Conversion**: Built-in rules for **Concentration** (mass/vol, molar, parts-per), **Time**, **Pressure**, and **Temperature**.
--   **Custom Formulas**: Define your own mathematical rules (e.g., `x * 1000` or `10**(-x)`) interactively via the GUI or script.
--   **Log Transformation**: The deduplication module now supports optional `-log10` transformation (e.g., converting IC50 to pIC50) with a single parameter.
--   **Flexible NaN Handling in Deduplication**: Introduced a control for missing values in condition columns. The default behavior is now set to retain rows with missing conditions (treating *NaN* as a valid group) instead of dropping them, preventing unintentional data loss.
--   **Enhanced Inorganic Filtering**: Significantly improved the `remove_inorganic` module using strict SMARTS pattern matching. It now accurately correctly identifies and removes complex inorganic species (e.g., ionic cyanides `[C-]#N`, carbonates, carbonyls) without misclassifying organic structures (like nitriles).
--   **Step-by-Step Audit Log**: Introduced a comprehensive **History Tracking** system. DiPTox now automatically records a timeline of every operation (Loading, Preprocessing, Filtering, Deduplication, etc.), tracking the **timestamp**, **operation details**, and the **number of rows retained or removed (Delta)** at each stage. This feature is available in both the Python API (`get_history()`) and the GUI.
+## New in v1.3: 
+# ✨ Key Features
+
+-   **Unit Standardization System**:
+    -   **Automatic Conversion**: Built-in rules for **Concentration**, **Time**, **Pressure**, and **Temperature**.
+    -   **Custom Formulas**: Define mathematical rules (e.g., `x * 1000`) interactively via GUI or script.
+    -   **Standardization**: Normalize heterogeneous target data into a single unit effortlessly.
+
+-   **Comprehensive History Tracking**:
+    -   Introduced an **Audit Log** system that records every operation (Loading, Preprocessing, Filtering, etc.).
+    -   Tracks **timestamps**, **operation details**, and row count changes (**Delta**) step-by-step.
+    -   Available via API (`get_history()`) and visualized in the GUI.
+
+-   **Advanced Deduplication Controls**:
+    -   **Log Transformation**: Optional `-log10` transformation (e.g., IC50 $\to$ pIC50) prior to deduplication.
+    -   **Flexible NaN Handling**: New control to retain rows with missing conditions (treating *NaN* as a group) instead of dropping them.
+
+# 🛠️ Improvements & Fixes
+
+-   **Robust Data Loading (SDF/MOL/SMI)**:
+    -   **SDF/MOL Binary Parsing**: Switched to binary stream reading to resolve encoding crashes (e.g., `utf-8` vs `latin-1` errors on Windows).
+    -   **Auto-SMILES Generation**: Molecules are now parsed directly from structure blocks to generate SMILES, allowing files without specific "SMILES" property columns to be loaded seamlessly.
+    -   **Header Control**: Added a **"Has Header?"** toggle in the GUI for `.smi` and `.txt` files.
+    -   **Smart Column Mapping**: Fixed logic issues where mapping columns by index (e.g., `0`, `1`) in headerless files could cause data overwriting.
+
+-   **Enhanced Inorganic Filtering**:
+    -   Updated the `remove_inorganic` module with strict SMARTS pattern matching.
+    -   Now accurately identifies complex inorganic species (e.g., ionic cyanides, carbonates) without misclassifying organic nitriles.
+
+-   **GUI Experience**:
+    -   Optimized the "Upload File" workflow with file-type specific hints (e.g., SDF auto-parsing tips).
+    -   Real-time logic updates for column selection based on file headers.
 
 ## DiPTox Community Check-in (Optional)
 To help us understand our user base and improve the software, DiPTox includes a one-time, optional survey on first use. 
