@@ -7,7 +7,7 @@
 **DiPTox** is a Python toolkit designed for the robust preprocessing, standardization, and multi-source data integration of molecular datasets, with a focus on computational toxicology workflows.
 
 ## New in v1.3: 
-# ✨ Key Features
+### ✨ Key Features
 
 -   **Unit Standardization System**:
     -   **Automatic Conversion**: Built-in rules for **Concentration**, **Time**, **Pressure**, and **Temperature**.
@@ -23,7 +23,7 @@
     -   **Log Transformation**: Optional `-log10` transformation (e.g., IC50 $\to$ pIC50) prior to deduplication.
     -   **Flexible NaN Handling**: New control to retain rows with missing conditions (treating *NaN* as a group) instead of dropping them.
 
-# 🛠️ Improvements & Fixes
+### 🛠️ Improvements & Fixes
 
 -   **Robust Data Loading (SDF/MOL/SMI)**:
     -   **SDF/MOL Binary Parsing**: Switched to binary stream reading to resolve encoding crashes (e.g., `utf-8` vs `latin-1` errors on Windows).
