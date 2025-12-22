@@ -144,9 +144,11 @@ class DataDeduplicator:
         if self.priority_list:
             for priority_val in self.priority_list:
                 matches = group[group[self.target_col] == priority_val]
+                if matches.empty:
+                    matches = group[group[self.target_col].astype(str) == str(priority_val)]
                 if not matches.empty:
                     final_record = matches.head(1).copy()
-                    final_record[self.target_col + '_new'] = priority_val
+                    final_record[self.target_col + '_new'] = final_record[self.target_col]
                     return self._mark_record(final_record, method=f'priority_{priority_val}')
 
         counts = group[self.target_col].value_counts()

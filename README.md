@@ -1,13 +1,13 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.4-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+![PyPI Test Version](https://img.shields.io/badge/testpypi-1.3.5-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
 **DiPTox** is a Python toolkit designed for the robust preprocessing, standardization, and multi-source data integration of molecular datasets, with a focus on computational toxicology workflows.
 
 ## New in v1.3: 
-# ✨ Key Features
+### ✨ Key Features
 
 -   **Unit Standardization System**:
     -   **Automatic Conversion**: Built-in rules for **Concentration**, **Time**, **Pressure**, and **Temperature**.
@@ -23,13 +23,16 @@
     -   **Log Transformation**: Optional `-log10` transformation (e.g., IC50 $\to$ pIC50) prior to deduplication.
     -   **Flexible NaN Handling**: New control to retain rows with missing conditions (treating *NaN* as a group) instead of dropping them.
 
-# 🛠️ Improvements & Fixes
+### 🛠️ Improvements & Fixes
 
 -   **Robust Data Loading (SDF/MOL/SMI)**:
     -   **SDF/MOL Binary Parsing**: Switched to binary stream reading to resolve encoding crashes (e.g., `utf-8` vs `latin-1` errors on Windows).
     -   **Auto-SMILES Generation**: Molecules are now parsed directly from structure blocks to generate SMILES, allowing files without specific "SMILES" property columns to be loaded seamlessly.
     -   **Header Control**: Added a **"Has Header?"** toggle in the GUI for `.smi` and `.txt` files.
     -   **Smart Column Mapping**: Fixed logic issues where mapping columns by index (e.g., `0`, `1`) in headerless files could cause data overwriting.
+
+-   **Discrete Deduplication Fix**:
+    -   Resolved a type mismatch issue where numeric categorical values (e.g., 1) failed to match string inputs from the GUI. The logic now employs "fuzzy matching" to ensure priority rules work seamlessly across data types (Integer vs String).
 
 -   **Enhanced Inorganic Filtering**:
     -   Updated the `remove_inorganic` module with strict SMARTS pattern matching.
