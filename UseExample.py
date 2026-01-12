@@ -42,7 +42,7 @@ a.config_deduplicator(data_type='discrete', # 'smiles', 'discrete' or 'continuou
                       method='vote', # 'auto', 'vote', '3sigma', 'IQR'
                       condition_cols=['pH','temperature'],
                       log_transform=True) # Example: provide a list of condition columns
-a.data_deduplicate()
+a.dataset_deduplicate()
 a.config_web_request(sources=['pubchem', 'cas', 'comptox', 'chemspider', 'cactus'],
                      comptox_api_key='your_key_here', 
                      chemspider_api_key='your_key_here', 
@@ -118,8 +118,8 @@ b.filter_by_atom_count(min_total_atoms=4)
 # max_heavy_atoms
 # min_total_atoms
 # max_total_atoms
-b.config_deduplicator()  # With no arguments, defaults to SMILES-only deduplication
-b.data_deduplicate()
+b.config_deduplicator(data_type='smiles')  # With no arguments, defaults to SMILES-only deduplication
+b.dataset_deduplicate()
 b.substructure_search(query_pattern='[C@@H]', is_smarts=True)  # Find substructures
 b.config_web_request(sources=['pubchem'], max_workers=4)
 b.web_request(send='smiles', request=['cas', 'iupac'])
@@ -149,7 +149,7 @@ c.config_deduplicator(data_type='continuous',        # Defaults to 'auto' method
                       standard_unit='mg/L',          # Target unit
                       conversion_rules=rules,      # Custom rules
                       log_transform=False)  
-c.data_deduplicate()
+c.dataset_deduplicate()
 c.save_results('CAS_Processed_Results.xlsx')
 
 
@@ -189,7 +189,7 @@ e.load_data(input_data=r"path/to/your/zinc_database.smi",
             
 e.preprocess()
 e.config_deduplicator(data_type='discrete')
-e.data_deduplicate()
+e.dataset_deduplicate()
 e.config_web_request(sources=['pubchem'], max_workers=4)
 e.web_request(send='smiles', request=['cas'])
 
@@ -226,6 +226,6 @@ f.load_data(input_data="path/to/your/FileName.xlsx",
             
 f.preprocess(check_valid_atoms=False)
 f.config_deduplicator(custom_method=custom_outlier_filter, data_type='continuous')
-f.data_deduplicate()
+f.dataset_deduplicate()
 
 f.save_results('Custom_Deduplication_Results.csv')
