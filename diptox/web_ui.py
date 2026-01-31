@@ -11,6 +11,8 @@ import streamlit as st
 import pandas as pd
 import threading
 import time
+import multiprocessing
+import platform
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from diptox.core import DiptoxPipeline
 from diptox import user_reg
@@ -570,10 +572,43 @@ elif step == "Preprocessing":
                 strict = c_chk2.checkbox("Strict Mode", value=False, disabled=not chk_valid,
                                          help="Reject entire molecule if invalid atoms found.")
 
-        # --- C. Post-Processing ---
-        st.markdown("### C. Post-Processing")
+        # --- C. Execution Settings ---
+        st.markdown("### C. Execution Settings")
         with st.container(border=True):
-            calc_inchi = st.checkbox("Calculate InChI", value=False, help="Generate InChI strings after processing.")
+            c_ex1, c_ex2 = st.columns(2)
+            with c_ex1:
+                st.markdown("#### Post-Processing")
+                calc_inchi = st.checkbox("Calculate InChI", value=False,
+                                         help="Generate InChI strings after processing.")
+            with c_ex2:
+                st.markdown("#### Performance")
+                is_windows = platform.system() == "Windows"
+
+                if is_windows:
+                    st.warning("⚠️ Windows Detected: Parallel processing (n_jobs > 1) is disabled in GUI mode to prevent system instability. Please use the Python API (script mode) or Linux/Mac for acceleration.")
+                    n_jobs = 1
+                    st.number_input(
+                        "Parallel Processes (CPU Cores)",
+                        value=1,
+                        min_value=1,
+                        max_value=1,
+                        disabled=True,
+                        help="Restricted to 1 on Windows GUI."
+                    )
+                else:
+                    try:
+                        max_cpu = multiprocessing.cpu_count()
+                    except:
+                        max_cpu = 1
+
+                    n_jobs = st.number_input(
+                        "Parallel Processes (CPU Cores)",
+                        min_value=1,
+                        max_value=max_cpu,
+                        value=1,
+                        step=1,
+                        help="Set number of concurrent processes. 1 = Sequential (Slower), >1 = Parallel (Faster). Recommended: max - 1."
+                    )
 
         if st.button("🚀 Run Preprocessing", type="primary"):
             progress_container = st.empty()
@@ -584,6 +619,7 @@ elif step == "Preprocessing":
                         st.markdown("#### ⚙️ Processing molecules...")
                         st.progress(min(current / total, 1.0))
                         st.caption(f"Progress: {current}/{total}")
+
 
             try:
                 update_progress(0, 100)
@@ -603,7 +639,8 @@ elif step == "Preprocessing":
                     hac_threshold=final_hac_threshold,
                     sanitize=sanitize,
                     reject_radical_species=rej_rad,
-                    progress_callback=update_progress
+                    progress_callback=update_progress,
+                    n_jobs=n_jobs  # Pass user selected core count
                 )
                 new_cols = ['Canonical SMILES', 'Is Valid', 'Processing Log']
                 if calc_inchi:
@@ -611,7 +648,7 @@ elif step == "Preprocessing":
                     new_cols.append('InChI')
                 track_gen_cols(new_cols)
                 update_preview()
-                st.success("Preprocessing complete!")
+                st.success(f"Preprocessing complete using {n_jobs} process(es)!")
             except Exception as e:
                 st.error(f"Preprocessing failed: {str(e)}")
             finally:

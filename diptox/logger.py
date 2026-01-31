@@ -6,6 +6,7 @@ from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
 from typing import Optional, Union
 import re
+import multiprocessing
 import os
 
 # Default log configuration
@@ -19,6 +20,7 @@ class LogManager:
     def __init__(self):
         self._configured = False
         self.loggers = {}
+        self._is_main_process = multiprocessing.current_process().name == 'MainProcess'
 
     def configure(
         self,
@@ -42,7 +44,9 @@ class LogManager:
         if root_logger.hasHandlers():
             root_logger.handlers.clear()
 
-        if os.environ.get("DIPTOX_GUI_MODE") == "true":
+        is_gui_mode = os.environ.get("DIPTOX_GUI_MODE") == "true"
+        is_worker_process = multiprocessing.current_process().name != 'MainProcess'
+        if is_gui_mode or is_worker_process:
             enable_file = False
 
         log_dir = Path(log_dir) if log_dir else Path(DEFAULT_LOG_DIR)
@@ -65,33 +69,36 @@ class LogManager:
 
         # File handler (rotating by size)
         if enable_file:
-            file_handler = RotatingFileHandler(
-                filename=log_dir / "DiPTox.log",
-                maxBytes=max_bytes,
-                backupCount=backup_count,
-                encoding="utf-8"
-            )
-            file_handler.setLevel(file_level)
-            file_handler.setFormatter(formatter)
-            root_logger.addHandler(file_handler)
+            try:
+                file_handler = RotatingFileHandler(
+                    filename=log_dir / "DiPTox.log",
+                    maxBytes=max_bytes,
+                    backupCount=backup_count,
+                    encoding="utf-8"
+                )
+                file_handler.setLevel(file_level)
+                file_handler.setFormatter(formatter)
+                root_logger.addHandler(file_handler)
 
-            # Separate handler for error logs (rotating by time)
-            error_handler = TimedRotatingFileHandler(
-                filename=log_dir / "DiPToxError.log",
-                when=when,
-                interval=interval,
-                backupCount=backup_count,
-                encoding="utf-8"
-            )
-            error_handler.setLevel(logging.WARNING)
-            error_handler.setFormatter(formatter)
-            root_logger.addHandler(error_handler)
+                # Separate handler for error logs (rotating by time)
+                error_handler = TimedRotatingFileHandler(
+                    filename=log_dir / "DiPToxError.log",
+                    when=when,
+                    interval=interval,
+                    backupCount=backup_count,
+                    encoding="utf-8"
+                )
+                error_handler.setLevel(logging.WARNING)
+                error_handler.setFormatter(formatter)
+                root_logger.addHandler(error_handler)
 
-            self._setup_log_cleaner(
-                log_dir=log_dir,
-                retention_days=log_retention_days,
-                max_total=max_total_logs
-            )
+                self._setup_log_cleaner(
+                    log_dir=log_dir,
+                    retention_days=log_retention_days,
+                    max_total=max_total_logs
+                )
+            except PermissionError:
+                pass
 
         # Configure log level for third-party libraries
         logging.getLogger("urllib3").setLevel(logging.WARNING)

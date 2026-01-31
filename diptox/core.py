@@ -1,12 +1,16 @@
 # diptox/core.py
 import os
+import sys
+
 import pandas as pd
-from typing import Optional, List, Union, Tuple, Callable, Dict
+from typing import Optional, List, Union, Tuple, Callable, Dict, Any
 from functools import partial, wraps
 from tqdm import tqdm
 from rdkit import Chem
 from datetime import datetime
 import requests
+import multiprocessing as mp
+import platform
 from .chem_processor import ChemistryProcessor
 from .web_request import WebService
 from .data_io import DataHandler
@@ -21,17 +25,143 @@ from diptox import user_reg
 def check_data_loaded(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
+        if platform.system() == "Windows" and mp.current_process().name != 'MainProcess':
+            return func(self, *args, **kwargs)
+
         if self.df is None:
             raise ValueError("No data loaded. Please load data first.")
         return func(self, *args, **kwargs)
     return wrapper
 
 
+def _run_on_main_process_only(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if platform.system() == "Windows" and mp.current_process().name != 'MainProcess':
+            return None
+        return func(self, *args, **kwargs)
+    return wrapper
+
+
+def _worker_preprocess(args: Tuple[str, ChemistryProcessor, Dict[str, Any]]) -> Tuple[bool, str, Optional[str]]:
+    """
+    Independent worker function for parallel processing.
+    Must be defined at module level to be picklable by multiprocessing.
+    """
+    try:
+        from rdkit import RDLogger
+        RDLogger.DisableLog('rdApp.*')
+    except (ImportError, AttributeError):
+        pass
+    smiles, processor, config = args
+    comments = []
+
+    # Early exit for empty smiles
+    if pd.isna(smiles) or str(smiles).strip() == "":
+        return False, "Empty SMILES", None
+
+    try:
+        # 1. Initialization
+        mol = processor.smiles_to_mol(smiles, config['sanitize'])
+        if mol is None:
+            return False, "Invalid SMILES", None
+
+        # 2. Build pipeline dynamically based on config
+        # Note: We reconstruct the steps here because passing partial objects
+        # across processes can sometimes be problematic or inefficient.
+        steps = []
+        step_descriptions = []
+
+        if config['remove_stereo']:
+            steps.append(processor.remove_stereochemistry)
+            step_descriptions.append("Stereo removal")
+
+        if config['remove_isotopes']:
+            steps.append(processor.remove_isotopes)
+            step_descriptions.append("Isotope removal")
+
+        if config['remove_hs']:
+            steps.append(processor.remove_hydrogens)
+            step_descriptions.append("Hydrogen removal")
+
+        if config['remove_salts']:
+            steps.append(processor.remove_salts)
+            step_descriptions.append("Salt removal")
+
+        if config['remove_solvents']:
+            steps.append(processor.remove_solvents)
+            step_descriptions.append("Solvent removal")
+
+        if config['remove_mixtures']:
+            mixture_processor = partial(
+                processor.remove_mixtures,
+                hac_threshold=config['hac_threshold'],
+                keep_largest=config['keep_largest_fragment']
+            )
+            steps.append(mixture_processor)
+            step_descriptions.append("Mixture removal")
+
+        if config['remove_inorganic']:
+            steps.append(processor.remove_inorganic)
+            step_descriptions.append("Inorganic removal")
+
+        if config['reject_radical_species']:
+            steps.append(processor.reject_radicals)
+            step_descriptions.append("Radical check")
+
+        if config['neutralize']:
+            charge_processor = partial(
+                processor.neutralize_charges,
+                reject_non_neutral=config['reject_non_neutral']
+            )
+            steps.append(charge_processor)
+            desc = "Charge neutralization"
+            if config['reject_non_neutral']:
+                desc += " and Non-neutral rejection"
+            step_descriptions.append(desc)
+
+        if config['check_valid_atoms']:
+            atom_validator = partial(processor.effective_atom, strict=config['strict_atom_check'])
+            steps.append(atom_validator)
+            step_descriptions.append("Atom validation")
+
+        # 3. Execute Pipeline
+        for step, desc in zip(steps, step_descriptions):
+            if mol is None:
+                break
+            try:
+                processed = step(mol)
+                if processed is None:
+                    comments.append(f"{desc} failed")
+                    mol = None
+                else:
+                    mol = processed
+            except Exception as e:
+                comments.append(f"{desc} error: {str(e)}")
+                mol = None
+
+        # 4. Finalize
+        if mol is not None:
+            try:
+                std_smiles = processor.standardize_smiles(mol)
+                return True, "; ".join(comments) if comments else "Success", std_smiles
+            except Exception as e:
+                return False, f"Standardization failed: {str(e)}", None
+        else:
+            return False, "; ".join(comments), None
+
+    except Exception as e:
+        return False, f"Worker Error: {str(e)}", None
+
+
 class DiptoxPipeline:
     """Main processing class that coordinates various modules."""
 
     def __init__(self):
-        self._check_initial_registration()
+        if platform.system() == "Windows" and mp.current_process().name != 'MainProcess':
+            pass
+        else:
+            self._check_initial_registration()
         self.chem_processor = ChemistryProcessor()
         self.data_handler = DataHandler()
 
@@ -116,12 +246,14 @@ class DiptoxPipeline:
         }
         self._audit_log.append(entry)
 
+    @_run_on_main_process_only
     def get_history(self) -> pd.DataFrame:
         """Returns the processing history as a DataFrame."""
         if not self._audit_log:
             return pd.DataFrame(columns=["Step", "Timestamp", "Rows Before", "Rows After", "Delta", "Details"])
         return pd.DataFrame(self._audit_log)
 
+    @_run_on_main_process_only
     def load_data(self,
                   input_data: Union[str, List[str], pd.DataFrame],
                   smiles_col: str = None,
@@ -234,7 +366,9 @@ class DiptoxPipeline:
                    hac_threshold: int = 3,
                    sanitize: bool = True,
                    reject_radical_species: bool = True,
-                   progress_callback: Optional[Callable[[int, int], None]] = None) -> pd.DataFrame:
+                   progress_callback: Optional[Callable[[int, int], None]] = None,
+                   n_jobs: int = 1,
+                   chunksize: int = 100) -> pd.DataFrame:
         """
         Execute the chemical processing pipeline.\
         :param remove_salts: Whether to remove salts.
@@ -253,110 +387,135 @@ class DiptoxPipeline:
         :param hac_threshold: Threshold for salt removal (heavy atoms count).
         :param sanitize: Whether to perform chemical sanitization.
         :param reject_radical_species: Molecules containing free radical atoms are directly rejected.
+        :param progress_callback: Optional callback function for progressing.
+        :param n_jobs: Number of parallel jobs to run.
+                       1 means sequential execution (default).
+                       -1 means use all available cores.
+                       >1 means use specified number of cores.
+        :param chunksize: Number of items to process per batch in multiprocessing.
         :return: Processed DataFrame with results.
         """
+        if platform.system() == "Windows" and mp.current_process().name != 'MainProcess':
+            msg = f"[WARNING] Process {os.getpid()} ignores 'preprocess' to prevent crash. Please use 'if __name__ == \"__main__\":' to fix memory issues."
+            print(msg, flush=True)
+            return self.df
+
         self._ensure_dtypes_after_load()
         df_start = self.df.copy()
 
-        # Build processing steps
-        steps: List[Callable[[Chem.Mol], Optional[Chem.Mol]]] = []
-        step_descriptions: List[str] = []
+        # Capture configuration for the worker
+        config = {
+            'remove_salts': remove_salts,
+            'remove_solvents': remove_solvents,
+            'remove_mixtures': remove_mixtures,
+            'remove_inorganic': remove_inorganic,
+            'neutralize': neutralize,
+            'reject_non_neutral': reject_non_neutral,
+            'check_valid_atoms': check_valid_atoms,
+            'strict_atom_check': strict_atom_check,
+            'remove_stereo': remove_stereo,
+            'remove_isotopes': remove_isotopes,
+            'remove_hs': remove_hs,
+            'keep_largest_fragment': keep_largest_fragment,
+            'hac_threshold': hac_threshold,
+            'sanitize': sanitize,
+            'reject_radical_species': reject_radical_species
+        }
 
-        if remove_stereo:
-            steps.append(self.chem_processor.remove_stereochemistry)
-            step_descriptions.append("Stereo removal")
+        smiles_list = self.df[self.smiles_col].tolist()
+        total_rows = len(smiles_list)
 
-        if remove_isotopes:
-            steps.append(self.chem_processor.remove_isotopes)
-            step_descriptions.append("Isotope removal")
+        # Determine number of workers
+        if n_jobs == -1:
+            try:
+                n_workers = mp.cpu_count()
+            except:
+                n_workers = 1
+        else:
+            n_workers = n_jobs
 
-        if remove_hs:
-            steps.append(self.chem_processor.remove_hydrogens)
-            step_descriptions.append("Hydrogen removal")
+        results = []
+        is_gui_mode = os.environ.get("DIPTOX_GUI_MODE") == "true"
+        run_sequentially = False
 
-        if remove_salts:
-            salt_processor = partial(self.chem_processor.remove_salts)
-            steps.append(salt_processor)
-            step_descriptions.append("Salt removal")
+        # Logic for Parallel vs Sequential
+        if n_workers > 1:
+            system_platform = platform.system()
+            ctx = None
 
-        if remove_solvents:
-            solvent_processor = partial(self.chem_processor.remove_solvents)
-            steps.append(solvent_processor)
-            step_descriptions.append("Solvent removal")
+            try:
+                # 1. Select optimal context
+                if system_platform != "Windows":
+                    # Linux/Mac: 'fork' is faster and doesn't require main guard
+                    try:
+                        ctx = mp.get_context('fork')
+                    except ValueError:
+                        ctx = mp.get_context('spawn')  # Fallback if fork unavailable
+                else:
+                    # Windows: Must use 'spawn'
+                    ctx = mp.get_context('spawn')
 
-        if remove_mixtures:
-            mixture_processor = partial(
-                self.chem_processor.remove_mixtures,
-                hac_threshold=hac_threshold,
-                keep_largest=keep_largest_fragment
-            )
-            steps.append(mixture_processor)
-            step_descriptions.append("Mixture removal")
+                logger.info(f"Starting preprocessing with {n_workers} processes (OS: {system_platform})...")
 
-        if remove_inorganic:
-            steps.append(self.chem_processor.remove_inorganic)
-            step_descriptions.append("Inorganic removal")
+                # Prepare arguments
+                process_args = [(s, self.chem_processor, config) for s in smiles_list]
 
-        if reject_radical_species:
-            steps.append(self.chem_processor.reject_radicals)
-            step_descriptions.append("Radical check")
+                # 2. Attempt execution
+                with ctx.Pool(processes=n_workers) as pool:
+                    iterator = pool.imap(
+                        _worker_preprocess,
+                        process_args,
+                        chunksize=chunksize
+                    )
 
-        if neutralize:
-            charge_processor = partial(
-                self.chem_processor.neutralize_charges,
-                reject_non_neutral=reject_non_neutral
-            )
-            steps.append(charge_processor)
-            description = "Charge neutralization"
-            if reject_non_neutral:
-                description += " and Non-neutral rejection"
-            step_descriptions.append(description)
+                    for i, result in tqdm(enumerate(iterator), total=total_rows, desc=f"Processing (MP={n_workers})"):
+                        results.append(result)
+                        if progress_callback and i % chunksize == 0:
+                            progress_callback(i + 1, total_rows)
 
-        if check_valid_atoms:
-            atom_validator = partial(self.chem_processor.effective_atom, strict=strict_atom_check)
-            steps.append(atom_validator)
-            step_descriptions.append("Atom validation")
-
-        total_rows = len(self.df)
-
-        # Process each molecule
-        for idx, row in tqdm(self.df.iterrows(), total=len(self.df), desc="Processing"):
-            smiles = row[self.smiles_col]
-            comments = []
-
-            mol = self.chem_processor.smiles_to_mol(smiles, sanitize)
-            if mol is None:
-                self._update_row(idx, False, "Invalid SMILES", None)
-                continue
-
-            # Execute processing steps
-            for step, desc in zip(steps, step_descriptions):
-                if mol is None:
-                    break
-
-                try:
-                    processed = step(mol)
-                    if processed is None:
-                        comments.append(f"{desc} failed")
-                        mol = None
+            except (RuntimeError, EOFError, OSError) as e:
+                if mp.current_process().name == 'MainProcess':
+                    err_msg = str(e).lower()
+                    if "freeze_support" in err_msg or "pipe" in err_msg or "eof" in err_msg or system_platform == "Windows":
+                        logger.error(
+                            "Multiprocessing failed (likely due to missing main guard). Switching to sequential mode.")
+                        if not is_gui_mode:
+                            print(
+                                "\n[System] Multiprocessing failed. Auto-fallback to sequential execution (n_jobs=1).\n")
                     else:
-                        mol = processed
-                except Exception as e:
-                    comments.append(f"{desc} error: {str(e)}")
-                    mol = None
+                        logger.error(f"Multiprocessing error: {e}")
+                results = []
+                run_sequentially = True
+            except Exception as e:
+                # Catch other unforeseen MP errors to prevent data loss
+                if mp.current_process().name == 'MainProcess':
+                    logger.error(f"Unexpected multiprocessing error: {e}. Fallback to sequential.")
+                results = []
+                run_sequentially = True
+        else:
+            run_sequentially = True
 
-            # Results handling
-            if mol is not None:
-                try:
-                    std_smiles = self.chem_processor.standardize_smiles(mol)
-                    self._update_row(idx, True, "; ".join(comments) if comments else "Success", std_smiles)
-                except Exception as e:
-                    self._update_row(idx, False, f"Standardization failed: {str(e)}", None)
+            # --- Sequential Fallback / Execution ---
+        if run_sequentially:
+            if n_workers > 1:
+                logger.info("Running in sequential mode (Fallback)...")
             else:
-                self._update_row(idx, False, "; ".join(comments), None)
+                logger.info("Running in sequential mode...")
 
-            if progress_callback and idx % 10 == 0:
-                progress_callback(idx + 1, total_rows)
+            for i, s in tqdm(enumerate(smiles_list), total=total_rows, desc="Processing"):
+                result = _worker_preprocess((s, self.chem_processor, config))
+                results.append(result)
+                if progress_callback and i % 10 == 0:
+                    progress_callback(i + 1, total_rows)
+
+        # Update DataFrame
+        is_valid_list = [r[0] for r in results]
+        logs_list = [r[1] for r in results]
+        canon_smiles_list = [r[2] for r in results]
+
+        self.df['Is Valid'] = pd.Series(is_valid_list, index=self.df.index, dtype="boolean")
+        self.df['Processing Log'] = pd.Series(logs_list, index=self.df.index, dtype="string")
+        self.df['Canonical SMILES'] = pd.Series(canon_smiles_list, index=self.df.index, dtype="string")
 
         if progress_callback:
             progress_callback(total_rows, total_rows)
@@ -364,9 +523,10 @@ class DiptoxPipeline:
 
         valid_count = self.df['Is Valid'].sum()
         invalid_count = total_rows - valid_count
-        pipeline_order = " -> ".join(step_descriptions)
+
+        mode_str = "Multiprocessing" if (n_workers > 1 and not run_sequentially) else "Sequential"
         self._record_step("Preprocessing", df_start, self.df,
-                          f"Valid: {valid_count}, Invalid: {invalid_count}. Order: {pipeline_order}")
+                          f"Valid: {valid_count}, Invalid: {invalid_count}. Mode: {mode_str}")
         return self.df
 
     def _update_row(self, idx, is_valid: bool, comment: str, smiles: Optional[str]) -> None:
@@ -375,6 +535,7 @@ class DiptoxPipeline:
         self.df.at[idx, 'Processing Log'] = "" if comment is None else str(comment)
         self.df.at[idx, 'Canonical SMILES'] = (pd.NA if smiles is None else str(smiles))
 
+    @_run_on_main_process_only
     @check_data_loaded
     def standardize_units(self, standard_unit: Optional[str] = None,
                           conversion_rules: Optional[Dict[Tuple[str, str], str]] = None) -> None:
@@ -478,6 +639,7 @@ class DiptoxPipeline:
             logger.warning(f"Rule input for '{from_unit}' cancelled.")
             return None
 
+    @_run_on_main_process_only
     def config_deduplicator(self, condition_cols: Optional[List[str]] = None,
                             data_type: str = "continuous",
                             method: str = "auto",
@@ -512,6 +674,7 @@ class DiptoxPipeline:
             custom_method=custom_method, log_transform=log_transform, dropna_conditions=dropna_conditions
         )
 
+    @_run_on_main_process_only
     @check_data_loaded
     def dataset_deduplicate(self, progress_callback: Optional[Callable] = None) -> None:
         """Execution deduplicator removal"""
@@ -547,6 +710,7 @@ class DiptoxPipeline:
             method_name += " (Log10 Transformed)"
         self._record_step("Deduplication", df_start, self.df, f"Method: {method_name}")
 
+    @_run_on_main_process_only
     @check_data_loaded
     def substructure_search(self, query_pattern: Union[str, List[str]],
                             is_smarts: bool = False) -> None:
@@ -574,6 +738,7 @@ class DiptoxPipeline:
             for idx, _ in results['matches']:
                 self.df.at[idx, col_name] = True
 
+    @_run_on_main_process_only
     def config_web_request(self, sources: Union[str, List[str]] = 'pubchem',
                            interval: int = 0.3,
                            retries: int = 3,
@@ -608,6 +773,7 @@ class DiptoxPipeline:
                                       cas_api_key=cas_api_key, force_api_mode=force_api_mode,
                                       status_callback=status_callback)
 
+    @_run_on_main_process_only
     @check_data_loaded
     def web_request(self, send: Union[str, List[str]], request: Union[str, List[str]],
                     progress_callback: Optional[Callable] = None) -> None:
@@ -721,6 +887,7 @@ class DiptoxPipeline:
             self.df.loc[pending_indices, 'Query_Status'] = 'Unknown Error'
             raise
 
+    @_run_on_main_process_only
     @check_data_loaded
     def calculate_inchi(self) -> None:
         """
@@ -751,6 +918,7 @@ class DiptoxPipeline:
         logger.info(f"InChI calculation complete. Generated {count} InChI strings.")
         self._record_step("InChI Calculation", None, self.df, f"Calculated {count} InChIs")
 
+    @_run_on_main_process_only
     @check_data_loaded
     def filter_by_atom_count(self,
                              min_heavy_atoms: Optional[int] = None,
@@ -800,6 +968,7 @@ class DiptoxPipeline:
         details = f"Heavy: {min_heavy_atoms}-{max_heavy_atoms}, Total: {min_total_atoms}-{max_total_atoms}"
         self._record_step("Filter Atom Count", df_start, self.df, details)
 
+    @_run_on_main_process_only
     @check_data_loaded
     def save_results(self, output_path: str, columns: Optional[List[str]] = None) -> None:
         """
@@ -811,6 +980,7 @@ class DiptoxPipeline:
         self.data_handler.save_data(self.df, output_path, save_cols, 'Canonical SMILES' if self._preprocess_key else self.smiles_col, self.id_col)
 
     # Chemical rule management interface
+    @_run_on_main_process_only
     def add_neutralization_rule(self, reactant: str, product: str) -> None:
         """
         Add a new neutralization rule to the list, ensuring the rule is valid and there are no conflicts.
@@ -819,6 +989,7 @@ class DiptoxPipeline:
         """
         return self.chem_processor.add_neutralization_rule(reactant, product)
 
+    @_run_on_main_process_only
     def remove_neutralization_rule(self, reactant: str) -> None:
         """
         Remove a charge neutralization rule.
@@ -826,6 +997,7 @@ class DiptoxPipeline:
         """
         return self.chem_processor.remove_neutralization_rule(reactant)
 
+    @_run_on_main_process_only
     def manage_atom_rules(self, atoms: Union[str, List[str]], add: bool = True) -> List[str]:
         """Manage atom validation rules."""
         atom_list = [atoms] if isinstance(atoms, str) else atoms
@@ -839,6 +1011,7 @@ class DiptoxPipeline:
                 failed.append(atom)
         return failed
 
+    @_run_on_main_process_only
     def manage_default_salt(self, salts: Union[str, List[str]], add: bool = True) -> List[str]:
         """Manage salt validation rules."""
         salt_list = [salts] if isinstance(salts, str) else salts
@@ -852,6 +1025,7 @@ class DiptoxPipeline:
                 failed.append(salt)
         return failed
 
+    @_run_on_main_process_only
     def manage_default_solvent(self, solvents: Union[str, List[str]], add: bool = True) -> List[str]:
         """Manage solvent validation rules."""
         solvent_list = [solvents] if isinstance(solvents, str) else solvents
@@ -865,6 +1039,7 @@ class DiptoxPipeline:
                 failed.append(solvent)
         return failed
 
+    @_run_on_main_process_only
     def display_processing_rules(self) -> None:
         """
         Displays the current chemical processing rules being used,
