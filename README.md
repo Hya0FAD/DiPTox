@@ -1,6 +1,6 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda Version](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
@@ -74,9 +74,30 @@ Flexible strategies for handling duplicate entries with advanced controls.
 -   **Display a summary** of all currently active processing rules.
 
 ## Installation
+You can install DiPTox using `pip` or via `conda`/`mamba`.
+### Option 1: Install from PyPI
 Install the official stable version from PyPI:
 ```bash
 pip install diptox
+```
+### Option 2: Install from Conda-forge
+Installing `diptox` from the `conda-forge` channel can be achieved by adding `conda-forge` to your channels with:
+
+```bash
+conda config --add channels conda-forge
+conda config --set channel_priority strict
+```
+
+Once the `conda-forge` channel has been enabled, `diptox` can be installed with `conda`:
+
+```bash
+conda install diptox
+```
+
+or with `mamba`:
+
+```bash
+mamba install diptox
 ```
 
 ## GUI

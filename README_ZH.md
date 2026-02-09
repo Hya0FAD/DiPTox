@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
+[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda Version](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">
@@ -76,9 +76,30 @@
 -   **显示**当前所有生效的处理规则的摘要。
 
 ## 安装
-从 PyPI 安装正式稳定版：
+可以通过 `pip` 或 `conda`/`mamba` 安装稳定版：
+### 方式1：从 PyPI 安装
+从 PyPI 安装官方稳定版本：
 ```bash
 pip install diptox
+```
+### 方式2：从 Conda-forge 安装
+通过以下步骤可以使用 `conda-forge` 频道安装 `diptox`：先将 `conda-forge` 添加到您的软件源列表中。
+
+```bash
+conda config --add channels conda-forge
+conda config --set channel_priority strict
+```
+
+一旦 `conda-forge` 渠道被启用，就可以使用 `conda` 来安装 `diptox`：
+
+```bash
+conda install diptox
+```
+
+或者通过 `mamba` 安装:
+
+```bash
+mamba install diptox
 ```
 
 ## 图形用户界面 (GUI)
