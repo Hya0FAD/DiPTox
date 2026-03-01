@@ -181,6 +181,9 @@ class DiptoxPipeline:
         self._dedup_unit_settings = None
         self.web_source = None
         self._audit_log = []
+        self._history = []
+        self._max_history = 5
+        self._current_dedup_config = None
 
     @staticmethod
     def _check_initial_registration():
@@ -245,6 +248,44 @@ class DiptoxPipeline:
             "Details": details
         }
         self._audit_log.append(entry)
+
+    def _save_checkpoint(self):
+        """A snapshot of the current data and the status of key columns"""
+        if self.df is not None:
+            snapshot = {
+                'df': self.df.copy(),
+                'smiles_col': self.smiles_col,
+                'cas_col': self.cas_col,
+                'name_col': self.name_col,
+                'target_col': self.target_col,
+                'unit_col': self.unit_col,
+                'id_col': self.id_col,
+                '_preprocess_key': self._preprocess_key,
+                '_units_standardized': self._units_standardized
+            }
+            self._history.append(snapshot)
+            if len(self._history) > self._max_history:
+                self._history.pop(0)
+
+    @_run_on_main_process_only
+    def undo(self) -> bool:
+        if not hasattr(self, '_history') or not self._history:
+            return False
+
+        df_before_undo = self.df.copy() if self.df is not None else None
+        snapshot = self._history.pop()
+        self.df = snapshot['df']
+        self.smiles_col = snapshot['smiles_col']
+        self.cas_col = snapshot['cas_col']
+        self.name_col = snapshot['name_col']
+        self.target_col = snapshot['target_col']
+        self.unit_col = snapshot['unit_col']
+        self.id_col = snapshot['id_col']
+        self._preprocess_key = snapshot['_preprocess_key']
+        self._units_standardized = snapshot['_units_standardized']
+
+        self._record_step("Undo", df_before_undo, self.df, "Restored to previous state")
+        return True
 
     @_run_on_main_process_only
     def get_history(self) -> pd.DataFrame:
@@ -318,6 +359,11 @@ class DiptoxPipeline:
         self.id_col = id_col
         self._units_standardized = False
         self._dedup_unit_settings = None
+
+        if hasattr(self, '_history'):
+            self._history.clear()
+        else:
+            self._history = []
 
         source_name = input_data if isinstance(input_data, str) else "Memory/List"
         self._record_step("Data Loading", None, self.df, f"Source: {source_name}")
@@ -401,6 +447,7 @@ class DiptoxPipeline:
             return self.df
 
         self._ensure_dtypes_after_load()
+        self._save_checkpoint()
         df_start = self.df.copy()
 
         # Capture configuration for the worker
@@ -525,8 +572,23 @@ class DiptoxPipeline:
         invalid_count = total_rows - valid_count
 
         mode_str = "Multiprocessing" if (n_workers > 1 and not run_sequentially) else "Sequential"
-        self._record_step("Preprocessing", df_start, self.df,
-                          f"Valid: {valid_count}, Invalid: {invalid_count}. Mode: {mode_str}")
+        active_rules = []
+        if remove_salts: active_rules.append("Rm_Salts")
+        if remove_solvents: active_rules.append("Rm_Solvents")
+        if remove_mixtures: active_rules.append(f"Rm_Mixtures(HAC>={hac_threshold})")
+        if remove_inorganic: active_rules.append("Rm_Inorg")
+        if neutralize: active_rules.append(f"Neutralize(Strict={reject_non_neutral})")
+        if check_valid_atoms: active_rules.append(f"Atom_Check(Strict={strict_atom_check})")
+        if remove_stereo: active_rules.append("Rm_Stereo")
+        if remove_isotopes: active_rules.append("Rm_Iso")
+        if remove_hs: active_rules.append("Rm_Hs")
+        if sanitize: active_rules.append("Sanitize")
+        if reject_radical_species: active_rules.append("Rej_Radicals")
+
+        rules_str = ", ".join(active_rules) if active_rules else "None"
+
+        details = f"Valid: {valid_count} | Invalid: {invalid_count} | Rules: [{rules_str}] | Mode: {mode_str}"
+        self._record_step("Preprocessing", df_start, self.df, details)
         return self.df
 
     def _update_row(self, idx, is_valid: bool, comment: str, smiles: Optional[str]) -> None:
@@ -544,6 +606,7 @@ class DiptoxPipeline:
         :param standard_unit: The target unit to convert all values to.
         :param conversion_rules: A dictionary of conversion rules, e.g., {('mg/L', 'ug/L'): 'x * 1000'}.
         """
+        self._save_checkpoint()
         df_start = self.df.copy()
         if not self.target_col or not self.unit_col:
             logger.info("Target column or unit column not specified, skipping unit standardization.")
@@ -580,12 +643,15 @@ class DiptoxPipeline:
             prompt_tracker = {'first_time': True}
             rule_provider = lambda from_unit, to_unit: self._get_rule_from_user(from_unit, to_unit, prompt_tracker)
 
+        smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
+
         try:
             self.df, new_target_col, new_unit_col = unit_processor.standardize(
                 df=self.df,
                 target_col=self.target_col,
                 unit_col=self.unit_col,
                 standard_unit=final_standard_unit,
+                smiles_col=smiles_col,
                 rule_provider_callback=rule_provider
             )
             self.target_col = new_target_col
@@ -673,6 +739,14 @@ class DiptoxPipeline:
             data_type=data_type, method=method, p_threshold=p_threshold, priority=priority,
             custom_method=custom_method, log_transform=log_transform, dropna_conditions=dropna_conditions
         )
+        self._current_dedup_config = {
+            'method': method,
+            'data_type': data_type,
+            'condition_cols': condition_cols,
+            'priority': priority,
+            'log_transform': log_transform,
+            'dropna_conditions': dropna_conditions
+        }
 
     @_run_on_main_process_only
     @check_data_loaded
@@ -680,6 +754,7 @@ class DiptoxPipeline:
         """Execution deduplicator removal"""
         if not self.deduplicator:
             raise ValueError("Deduplicator not configured. Call config_deduplicator first.")
+        self._save_checkpoint()
         df_start = self.df.copy()
 
         if self._dedup_unit_settings and not self._units_standardized:
@@ -708,7 +783,18 @@ class DiptoxPipeline:
         method_name = self.deduplicator.method
         if self.deduplicator.log_transform:
             method_name += " (Log10 Transformed)"
-        self._record_step("Deduplication", df_start, self.df, f"Method: {method_name}")
+
+        cfg = getattr(self, '_current_dedup_config', {})
+        method_name = cfg.get('method', 'unknown')
+        if cfg.get('log_transform', False):
+            method_name += " (Log10 Transformed)"
+        conds_list = cfg.get('condition_cols')
+        conds = f"Conds: {conds_list}" if conds_list else "No Conds"
+        dropna_str = "DropNA" if cfg.get('dropna_conditions', False) else "KeepNA"
+        priority_list = cfg.get('priority')
+        priority_str = f" | Priority: {priority_list}" if priority_list else ""
+        details = f"Method: {method_name} ({cfg.get('data_type', 'unknown')}) | {conds} | {dropna_str}{priority_str}"
+        self._record_step("Deduplication", df_start, self.df, details)
 
     @_run_on_main_process_only
     @check_data_loaded
@@ -719,6 +805,8 @@ class DiptoxPipeline:
         :param query_pattern: Molecular substructure
         :param is_smarts: Search mode (SMILES/SMARTS)
         """
+        self._save_checkpoint()
+        df_start = self.df.copy()
         searcher = SubstructureSearcher(
             df=self.df,
             smiles_col='Canonical SMILES' if self._preprocess_key else self.smiles_col,
@@ -737,6 +825,9 @@ class DiptoxPipeline:
 
             for idx, _ in results['matches']:
                 self.df.at[idx, col_name] = True
+            matches = self.df[col_name].sum()
+            self._record_step("Substructure Search", df_start, self.df,
+                              f"Pattern: {query_pattern} (SMARTS: {is_smarts}) | Matches Found: {matches}")
 
     @_run_on_main_process_only
     def config_web_request(self, sources: Union[str, List[str]] = 'pubchem',
@@ -784,6 +875,8 @@ class DiptoxPipeline:
         """
         if self.web_service is None:
             raise ValueError("The WebService has not been configured. Please call the config_web_request first.")
+        self._save_checkpoint()
+        df_start = self.df.copy()
         send_by_list = [send] if isinstance(send, str) else send
         send_ordered = list(dict.fromkeys([prop.strip().lower() for prop in send_by_list]))
         request_list = [request] if isinstance(request, str) else request
@@ -819,6 +912,7 @@ class DiptoxPipeline:
         self.df['Query_Status'] = "Pending"
 
         pending_indices = list(self.df.index)
+        total_queries = len(pending_indices)
 
         try:
             total_steps = len(send_ordered)
@@ -870,13 +964,18 @@ class DiptoxPipeline:
             if 'smiles' in request_set:
                 if not self._preprocess_key:
                     self.smiles_col = 'smiles_from_web'
-            if 'cas' in request:
+            if 'cas' in request_set:
                 self.cas_col = 'cas_from_web'
-            if 'name' in request:
+            if 'name' in request_set:
                 self.name_col = 'name_from_web'
 
             success_count = len(self.df[self.df['Query_Status'] == 'Success'])
-            self._record_step("Web Request", None, self.df, f"Found data for {success_count} rows")
+            props_str = ", ".join(request_set)
+            send_str = " -> ".join(send_ordered)
+            sources_str = ", ".join(self.web_source) if isinstance(self.web_source, list) else self.web_source
+
+            details = f"Queried: {props_str} (via {send_str}) | Sources: [{sources_str}] | Success: {success_count}/{total_queries}"
+            self._record_step("Web Request", df_start, self.df, details)
 
         except requests.exceptions.RequestException as e:
             logger.error(f"An error occurred on the network, and the web request was interrupted: {e}")
@@ -932,6 +1031,7 @@ class DiptoxPipeline:
         :param min_total_atoms: Minimum number of total atoms (inclusive).
         :param max_total_atoms: Maximum number of total atoms (inclusive).
         """
+        self._save_checkpoint()
         df_start = self.df.copy()
         if all(arg is None for arg in [min_heavy_atoms, max_heavy_atoms, min_total_atoms, max_total_atoms]):
             logger.warning("No filter criteria provided for filter_by_atom_count. No action taken.")
@@ -965,7 +1065,7 @@ class DiptoxPipeline:
         final_count = len(self.df)
         logger.info(
             f"Filtered by atom count. Initial: {initial_count}, Final: {final_count}, Removed: {initial_count - final_count}")
-        details = f"Heavy: {min_heavy_atoms}-{max_heavy_atoms}, Total: {min_total_atoms}-{max_total_atoms}"
+        details = f"Heavy: {min_heavy_atoms}-{max_heavy_atoms} | Total: {min_total_atoms}-{max_total_atoms} | Removed: {initial_count - final_count}"
         self._record_step("Filter Atom Count", df_start, self.df, details)
 
     @_run_on_main_process_only

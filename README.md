@@ -18,6 +18,10 @@ We are excited to announce the first official stable release of DiPTox on PyPI! 
 * **Enhanced Data Loading**:
     * Switched to binary stream parsing for `.sdf` and `.mol` files to resolve encoding crashes (e.g., `utf-8` vs `latin-1`).
     * Auto-parsing of molecular structures to generate SMILES even when properties are missing.
+### Version Update Log (1.0.3)
+* **Enhanced Unit Standardization**: Custom conversion formulas now fully support molecular weight (`mw`). You can seamlessly convert between molarity and mass concentrations (e.g., using formulas like `x * mw * 1000`).
+* **GUI Interface Optimization**: The Streamlit graphical interface has been beautifully redesigned for a more professional, clean, and logical scientific layout. We've reduced visual clutter, grouped configuration panels intuitively, and improved component alignment.
+* **Comprehensive Audit Log (History)**: The processing history has been heavily upgraded. It now records granular parameters for every operation—including exactly which preprocessing rules were triggered, active deduplication conditions, web query statuses, and substructure search match counts.
 
 ## DiPTox Community Check-in (Optional)
 To help us understand our user base and improve the software, DiPTox includes a one-time, optional survey on first use. 
@@ -153,7 +157,7 @@ def main():
 
     # Configure deduplication and unit standardization
     conversion_rules = {('g/L', 'mg/L'): 'x * 1000', 
-                        ('ug/L', 'mg/L'): 'x / 1000',}
+                        ('M', 'mg/L'): 'x * mw * 1000',}
     DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority, standard_unit, conversion_rules, log_transform, dropna_conditions)
     DP.dataset_deduplicate()
 

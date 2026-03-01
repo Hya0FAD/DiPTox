@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import re
 from typing import Optional, Callable, Tuple, Dict
+from rdkit import Chem, RDLogger
+from rdkit.Chem import Descriptors
 from .logger import log_manager
 
 logger = log_manager.get_logger(__name__)
@@ -38,7 +40,12 @@ class UnitProcessor:
                  ('degC', 'K'): 'x + 273.15', ('K', '°C'): 'x - 273.15', ('°F', '°C'): '(x - 32) * 5/9',
                  ('degF', '°C'): '(x - 32) * 5/9', ('°C', '°F'): '(x * 9/5) + 32', ('mM', 'M'): 'x / 1000',
                  ('uM', 'M'): 'x / 1000000', ('µM', 'M'): 'x / 1000000', ('nM', 'M'): 'x / 1000000000',
-                 ('M', 'mM'): 'x * 1000', ('M', 'uM'): 'x * 1000000'}
+                 ('M', 'mM'): 'x * 1000', ('M', 'uM'): 'x * 1000000', ('M', 'g/L'): 'x * mw',
+                 ('M', 'mg/L'): 'x * mw * 1000', ('mM', 'g/L'): '(x * mw) / 1000', ('mM', 'mg/L'): 'x * mw',
+                 ('uM', 'mg/L'): '(x * mw) / 1000', ('uM', 'ug/L'): 'x * mw', ('µM', 'ug/L'): 'x * mw',
+                 ('nM', 'ng/L'): 'x * mw', ('g/L', 'M'): 'x / mw', ('mg/L', 'M'): 'x / (mw * 1000)',
+                 ('g/L', 'mM'): '(x * 1000) / mw', ('mg/L', 'mM'): 'x / mw', ('mg/L', 'uM'): '(x * 1000) / mw',
+                 ('ug/L', 'uM'): 'x / mw', ('µg/L', 'µM'): 'x / mw', ('ng/L', 'nM'): 'x / mw'}
         return rules
 
     def add_rule(self, from_unit: str, to_unit: str, formula: str):
@@ -68,24 +75,57 @@ class UnitProcessor:
 
         # Allow only specific characters and patterns
         allowed_chars_pattern = r"^[x\d\s\.\+\-\*\/\(\)e]+$"
-        if not re.match(allowed_chars_pattern, formula.replace("log10", "").replace("log", "").replace("exp", "")):
+        clean_formula = formula.replace("log10", "").replace("log", "").replace("exp", "").replace("mw", "")
+        if not re.match(allowed_chars_pattern, clean_formula):
             logger.error(f"Formula contains disallowed characters: {formula}")
             return False
 
         # Prevent calling other functions or using other variables
-        # Finds any word that is not 'x', 'log', 'log10', 'exp', or 'e'
-        disallowed_names = re.findall(r"\b(?!x|log10|log|exp|e\b)[a-df-zA-Z_]\w*\b", formula)
+        # Finds any word that is not 'x', 'mw', 'log', 'log10', 'exp', or 'e'
+        disallowed_names = re.findall(r"\b(?!x|mw|log10|log|exp|e\b)[a-df-zA-Z_]\w*\b", formula)
         if disallowed_names:
             logger.error(f"Formula contains disallowed names: {disallowed_names}")
             return False
 
         return True
 
-    def convert(self, values: pd.Series, formula: str) -> pd.Series:
+    @staticmethod
+    def _apply_precision(original_series: pd.Series, converted_series: pd.Series) -> pd.Series:
+        def get_sig_figs(s):
+            if pd.isna(s):
+                return np.nan
+            s = str(s).strip().lower().lstrip('-')
+            if 'e' in s:
+                s = s.split('e')[0]
+            s_clean = s.replace('.', '').lstrip('0')
+            if not s_clean:
+                return 1
+            return len(s_clean)
+
+        def round_to_sig_figs(val, sf):
+            if pd.isna(val) or pd.isna(sf):
+                return val
+            if val == 0:
+                return 0.0
+            sf = int(sf)
+            try:
+                order = int(np.floor(np.log10(abs(val))))
+                decimals = sf - 1 - order
+                if decimals <= 0:
+                    return np.round(val, 0)
+                return np.round(val, decimals)
+            except Exception:
+                return val
+        sig_figs = original_series.apply(get_sig_figs)
+        rounded_values = [round_to_sig_figs(v, sf) for v, sf in zip(converted_series, sig_figs)]
+        return pd.Series(rounded_values, index=converted_series.index)
+
+    def convert(self, values: pd.Series, formula: str, mw: Optional[pd.Series] = None) -> pd.Series:
         """
         Applies the conversion formula to a pandas Series.
         :param values: The series of numerical data to convert.
         :param formula: The mathematical expression for conversion, using 'x' as the variable.
+        :param mw: An optional series of molecular weights, aligned with 'values'.
         :return: A new Series with the converted values.
         """
         if not self._is_valid_formula(formula):
@@ -101,6 +141,11 @@ class UnitProcessor:
             'e': np.e,
         }
 
+        if 'mw' in formula:
+            if mw is None:
+                raise ValueError("Formula requires 'mw' but no molecular weight series was provided.")
+            safe_dict['mw'] = pd.to_numeric(mw, errors='coerce')
+
         try:
             result = pd.eval(formula, local_dict=safe_dict, global_dict={})
             return result
@@ -109,6 +154,7 @@ class UnitProcessor:
             return pd.Series(np.nan, index=values.index)
 
     def standardize(self, df: pd.DataFrame, target_col: str, unit_col: str, standard_unit: str,
+                    smiles_col: Optional[str] = None,
                     rule_provider_callback: Optional[Callable[[str, str], Optional[str]]] = None) -> Tuple[pd.DataFrame, str, str]:
         """
         Performs the full unit standardization process on a DataFrame.
@@ -117,6 +163,7 @@ class UnitProcessor:
         :param target_col: The name of the column with values to convert.
         :param unit_col: The name of the column specifying the units.
         :param standard_unit: The target unit to convert all values to.
+        :param smiles_col: The name of the column containing SMILES strings, for MW-based conversions.
         :param rule_provider_callback: An optional function that takes (from_unit, to_unit)
                                        and returns a formula string if a rule is missing.
         :return: A tuple containing the processed DataFrame and the new target column name.
@@ -135,7 +182,7 @@ class UnitProcessor:
         for unit in unique_units:
             mask = df[unit_col] == unit
             if unit == standard_unit:
-                df.loc[mask, new_target_col] = df.loc[mask, target_col]
+                df.loc[mask, new_target_col] = pd.to_numeric(df.loc[mask, target_col], errors='coerce')
                 continue
 
             formula = self.get_rule(unit, standard_unit)
@@ -153,7 +200,23 @@ class UnitProcessor:
 
             if formula:
                 values_to_convert = df.loc[mask, target_col]
-                converted_values = self.convert(values_to_convert, formula)
+                mw_values = None
+                if 'mw' in formula:
+                    if not smiles_col or smiles_col not in df.columns:
+                        raise ValueError(f"Formula requires 'mw', but a valid SMILES column was not provided.")
+
+                    def calculate_mw(smiles):
+                        if pd.isna(smiles): return None
+                        try:
+                            mol = Chem.MolFromSmiles(str(smiles))
+                            return Descriptors.MolWt(mol) if mol else None
+                        except Exception:
+                            return None
+
+                    mw_values = df.loc[mask, smiles_col].apply(calculate_mw)
+
+                converted_values = self.convert(values_to_convert, formula, mw=mw_values)
+                converted_values = self._apply_precision(values_to_convert, converted_values)
                 df.loc[mask, new_target_col] = converted_values
             else:
                 if not rule_provider_callback:

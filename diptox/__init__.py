@@ -17,4 +17,4 @@ __all__ = ["DiptoxPipeline",
            "SubstructureSearcher",
            "UnitProcessor"
            ]
-__version__ = "1.0.0"
+__version__ = "1.0.3"

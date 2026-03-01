@@ -268,7 +268,7 @@ class ChemistryProcessor:
             lg.setLevel(RDLogger.INFO)
 
     @staticmethod
-    def CombineFragments(fragments: list[Chem.Mol]) -> Chem.Mol:
+    def CombineFragments(fragments: List[Chem.Mol]) -> Chem.Mol:
         """Combine multiple fragments into a single molecule."""
         smiles = [Chem.MolToSmiles(f, isomericSmiles=True, canonical=True) for f in fragments]
         return Chem.MolFromSmiles('.'.join(smiles))
