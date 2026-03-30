@@ -27,7 +27,7 @@ class UnitProcessor:
         Defines a set of built-in conversion rules based on common scientific units.
         Derived from pint definitions and common usage.
         """
-        rules = {('g/L', 'mg/L'): 'x * 1000', ('mg/L', 'g/L'): 'x / 1000', ('mg/L', 'ug/L'): 'x * 1000',
+        rules = {('g/L', 'mg/L'): 'x * 1000', ('mg/L', 'g/L'): 'x / 1000', ('mg/L', 'ug/L'): 'x * 1000', ('mg/L', 'µg/L'): 'x * 1000',
                  ('ug/L', 'mg/L'): 'x / 1000', ('µg/L', 'mg/L'): 'x / 1000', ('mg/L', 'ng/L'): 'x * 1000000',
                  ('ng/L', 'mg/L'): 'x / 1000000', ('ml/L', 'ul/L'): 'x * 1000', ('ul/L', 'ml/L'): 'x / 1000',
                  ('%', 'ppm'): 'x * 10000', ('ppm', '%'): 'x / 10000', ('vol%', 'ppm'): 'x * 10000',

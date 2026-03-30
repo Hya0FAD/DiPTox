@@ -18,6 +18,9 @@ We are excited to announce the first official stable release of DiPTox on PyPI! 
 * **Enhanced Data Loading**:
     * Switched to binary stream parsing for `.sdf` and `.mol` files to resolve encoding crashes (e.g., `utf-8` vs `latin-1`).
     * Auto-parsing of molecular structures to generate SMILES even when properties are missing.
+### Version Update Log (1.0.4)
+* **GUI State Management Fix**: Resolved a `StreamlitAPIException` on the Export page that occurred when using the "Undo Last Step" feature. Implemented proper `on_click` callbacks to safely mutate the `session_state` (specifically for `export_selected_cols`) before the UI re-renders, ensuring a crash-free and seamless undo experience.
+* **Refined Preprocessing Rules**: Adjusted and optimized several default charge neutralization rules.
 ### Version Update Log (1.0.3)
 * **Enhanced Unit Standardization**: Custom conversion formulas now fully support molecular weight (`mw`). You can seamlessly convert between molarity and mass concentrations (e.g., using formulas like `x * mw * 1000`).
 * **GUI Interface Optimization**: The Streamlit graphical interface has been beautifully redesigned for a more professional, clean, and logical scientific layout. We've reduced visual clutter, grouped configuration panels intuitively, and improved component alignment.

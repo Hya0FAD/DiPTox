@@ -1202,8 +1202,9 @@ st.sidebar.divider()
 st.sidebar.markdown("### Actions")
 can_undo = hasattr(pipeline, '_history') and len(pipeline._history) > 0
 
-if st.sidebar.button("Undo Last Step", disabled=not can_undo, use_container_width=True,
-                     help="Revert the last processing action (Supports up to 5 steps)."):
+
+def undo_action():
+    """Callback function to handle undo logic before the UI re-renders."""
     if pipeline.undo():
         update_preview()
         if 'export_selected_cols' in st.session_state and pipeline.df is not None:
@@ -1212,5 +1213,12 @@ if st.sidebar.button("Undo Last Step", disabled=not can_undo, use_container_widt
                 c for c in st.session_state.export_selected_cols if c in valid_cols
             ]
         st.toast("Successfully restored the previous step!")
-        time.sleep(0.5)
-        st.rerun()
+
+
+st.sidebar.button(
+    "Undo Last Step",
+    disabled=not can_undo,
+    use_container_width=True,
+    help="Revert the last processing action (Supports up to 5 steps).",
+    on_click=undo_action
+)
