@@ -74,7 +74,7 @@ class UnitProcessor:
             return False
 
         # Allow only specific characters and patterns
-        allowed_chars_pattern = r"^[x\d\s\.\+\-\*\/\(\)e]+$"
+        allowed_chars_pattern = r"^[x\d\s\.\+\-\*\/\(\)e\^]+$"
         clean_formula = formula.replace("log10", "").replace("log", "").replace("exp", "").replace("mw", "")
         if not re.match(allowed_chars_pattern, clean_formula):
             logger.error(f"Formula contains disallowed characters: {formula}")
@@ -131,6 +131,8 @@ class UnitProcessor:
         if not self._is_valid_formula(formula):
             raise ValueError(f"Invalid or unsafe formula provided for conversion: {formula}")
 
+        python_formula = formula.replace('^', '**')
+
         numeric_values = pd.to_numeric(values, errors='coerce')
 
         safe_dict = {
@@ -147,7 +149,7 @@ class UnitProcessor:
             safe_dict['mw'] = pd.to_numeric(mw, errors='coerce')
 
         try:
-            result = pd.eval(formula, local_dict=safe_dict, global_dict={})
+            result = pd.eval(python_formula, local_dict=safe_dict, global_dict={})
             return result
         except Exception as e:
             logger.error(f"Failed to evaluate formula '{formula}': {e}")
@@ -168,6 +170,14 @@ class UnitProcessor:
                                        and returns a formula string if a rule is missing.
         :return: A tuple containing the processed DataFrame and the new target column name.
         """
+        df[target_col] = pd.to_numeric(df[target_col], errors='coerce')
+        invalid_mask = df[target_col].isna()
+
+        if invalid_mask.any():
+            dropped = invalid_mask.sum()
+            logger.warning(f"Before the unit conversion, {dropped} non-numeric records in '{target_col}' were removed.")
+            df = df[~invalid_mask].copy()
+
         unique_units = [u for u in df[unit_col].dropna().unique() if u]
         new_target_col = f"{target_col} (Standardized)"
         new_unit_col = f"{unit_col} (Standardized)"
@@ -182,7 +192,7 @@ class UnitProcessor:
         for unit in unique_units:
             mask = df[unit_col] == unit
             if unit == standard_unit:
-                df.loc[mask, new_target_col] = pd.to_numeric(df.loc[mask, target_col], errors='coerce')
+                df.loc[mask, new_target_col] = df.loc[mask, target_col]
                 continue
 
             formula = self.get_rule(unit, standard_unit)

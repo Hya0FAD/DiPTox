@@ -357,6 +357,7 @@ class DiptoxPipeline:
         self.unit_col = unit_col
         self.inchikey_col = inchikey_col
         self.id_col = id_col
+        self._preprocess_key = 0
         self._units_standardized = False
         self._dedup_unit_settings = None
 
@@ -614,8 +615,9 @@ class DiptoxPipeline:
             return
 
         unique_units = [u for u in self.df[self.unit_col].dropna().unique() if u]
-        if len(unique_units) <= 1:
-            logger.info("Only one unit detected. No conversion necessary.")
+        current_unit = unique_units[0] if unique_units else None
+        if len(unique_units) <= 1 and (not standard_unit or current_unit == standard_unit):
+            logger.info("Only one unit detected and it matches standard. No conversion necessary.")
             # Ensure a consistent '_new' column is created for the next step
             new_target_col = f"{self.target_col} (Standardized)"
             new_unit_col = f"{self.unit_col} (Standardized)"
@@ -714,7 +716,7 @@ class DiptoxPipeline:
                             custom_method: Optional[Callable] = None,
                             standard_unit: Optional[str] = None,
                             conversion_rules: Optional[Dict[Tuple[str, str], str]] = None,
-                            log_transform: bool = False,
+                            log_transform: Union[bool, str] = "None",
                             dropna_conditions: bool = False) -> None:
         """
         Configure the deduplicator device
@@ -786,8 +788,9 @@ class DiptoxPipeline:
 
         cfg = getattr(self, '_current_dedup_config', {})
         method_name = cfg.get('method', 'unknown')
-        if cfg.get('log_transform', False):
-            method_name += " (Log10 Transformed)"
+        trans = cfg.get('log_transform', "None")
+        if trans != "None":
+            method_name += f" ({trans} Transformed)"
         conds_list = cfg.get('condition_cols')
         conds = f"Conds: {conds_list}" if conds_list else "No Conds"
         dropna_str = "DropNA" if cfg.get('dropna_conditions', False) else "KeepNA"

@@ -61,16 +61,35 @@ class DataDeduplicator:
         self._validate_columns(df)
         df = df[df[self.smiles_col].notna()].copy()
 
-        if self.target_col and self.data_type == 'continuous' and self.log_transform:
-            logger.info(f"Applying -log10 transformation to the target column '{self.target_col}'.")
+        if self.target_col and self.data_type == 'continuous':
+            initial_count = len(df)
+            df[self.target_col] = pd.to_numeric(df[self.target_col], errors='coerce')
+            df = df.dropna(subset=[self.target_col])
+
+            dropped = initial_count - len(df)
+            if dropped > 0:
+                logger.warning(f"From the column '{self.target_col}', {dropped} records containing non-numeric values or null entries have been removed.")
+
+        transform_mode = self.log_transform
+        if isinstance(transform_mode, bool):
+            transform_mode = "-log10" if transform_mode else "None"
+
+        if self.target_col and self.data_type == 'continuous' and transform_mode != "None":
+            logger.info(f"Applying {transform_mode} transformation to the target column '{self.target_col}'.")
             initial_rows = len(df)
-            positive_mask = pd.to_numeric(df[self.target_col], errors='coerce') > 0
+            positive_mask = df[self.target_col] > 0
+
             if not positive_mask.all():
                 df = df[positive_mask]
                 removed_count = initial_rows - len(df)
                 logger.warning(
-                    f"Removed {removed_count} rows with non-positive target values before log transformation.")
-            df[self.target_col] = -np.log10(pd.to_numeric(df[self.target_col], errors='coerce'))
+                    f"Removed {removed_count} rows with non-positive values before {transform_mode} transformation.")
+
+            numeric_vals = pd.to_numeric(df[self.target_col], errors='coerce')
+            if transform_mode == "-log10":
+                df[self.target_col] = -np.log10(numeric_vals)
+            elif transform_mode == "log10":
+                df[self.target_col] = np.log10(numeric_vals)
 
         group_keys = [self.smiles_col] + self.condition_cols
         grouped = df.groupby(group_keys, group_keys=False, sort=False, dropna=self.dropna_conditions)

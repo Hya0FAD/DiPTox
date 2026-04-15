@@ -18,6 +18,11 @@ We are excited to announce the first official stable release of DiPTox on PyPI! 
 * **Enhanced Data Loading**:
     * Switched to binary stream parsing for `.sdf` and `.mol` files to resolve encoding crashes (e.g., `utf-8` vs `latin-1`).
     * Auto-parsing of molecular structures to generate SMILES even when properties are missing.
+### Version Update Log (1.0.5)
+* **Enhanced Unit Standardization**: Added support for the standard math operator `^` (power) by automatically mapping it to `**`, and fixed a logic error that caused single-unit datasets to be skipped even when a different target unit was specified.
+* **Deduplication Logic Upgrades**: Introduced a `log10` transformation mode alongside the existing `-log10` option, enabling support for both toxicity data (pIC50) and physicochemical properties like water solubility (logS) or partition coefficients.
+* **Robustness & Error Handling**: Implemented strict numerical validation using `errors='coerce'` in standardization and deduplication modules to automatically filter out invalid strings (e.g., "N/A", ">100") with clear warning feedback in the GUI.
+* **Critical State Management Fix**: Resolved an issue where `load_data` failed to reset the `_preprocess_key` flag, ensuring that automatic column mapping logic for Web Requests (like auto-detecting `smiles_from_web`) functions correctly after a new dataset is loaded.
 ### Version Update Log (1.0.4)
 * **GUI State Management Fix**: Resolved a `StreamlitAPIException` on the Export page that occurred when using the "Undo Last Step" feature. Implemented proper `on_click` callbacks to safely mutate the `session_state` (specifically for `export_selected_cols`) before the UI re-renders, ensuring a crash-free and seamless undo experience.
 * **Refined Preprocessing Rules**: Adjusted and optimized several default charge neutralization rules.

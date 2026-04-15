@@ -925,13 +925,12 @@ elif step == "Deduplication":
                 with c1:
                     method = st.selectbox("Deduplication Method", ["auto", "3sigma", "IQR"])
                 with c2:
-                    mode_selection = st.selectbox(
-                        "Apply -log10 Transformation",
-                        options=["False", "True"],
+                    log_transform = st.selectbox(
+                        "Target Value Transformation",
+                        options=["None", "-log10", "log10"],
                         index=0,
-                        help="Transforms target values using `y = -log10(x)`. Rows with non-positive values will be removed."
+                        help="None: No transformation.\n-log10: Commonly used for toxicity (pIC50).\nlog10: Often used for solubility or partition coefficients."
                     )
-                    log_transform = False if mode_selection == "False" else True
             elif data_type == "discrete":
                 method = "vote"
                 st.info("Priority Rule: If specified values exist in a duplicate group, they are selected first.")
