@@ -205,6 +205,10 @@ class DataHandler:
         diptox_args = ['cas_col', 'name_col', 'target_col', 'unit_col', 'inchikey_col']
         for arg in diptox_args:
             kwargs.pop(arg, None)
+
+        smiles_pos = kwargs.pop('smiles_pos', None)
+        id_pos = kwargs.pop('id_pos', None)
+
         try:
             with open(file_path) as f:
                 first_line = f.readline()
@@ -231,11 +235,35 @@ class DataHandler:
                     should_rename_id = False
 
                 new_columns = list(df.columns)
-                if should_rename_smiles and len(new_columns) >= 1 and smiles_col:
-                    new_columns[0] = smiles_col
 
-                if should_rename_id and len(new_columns) >= 2 and id_col:
-                    new_columns[1] = id_col
+                if smiles_pos is not None and isinstance(smiles_pos, int) and smiles_pos < len(new_columns):
+                    smiles_idx = smiles_pos
+                else:
+                    smiles_idx = 0
+                    if len(new_columns) >= 1:
+                        from rdkit import Chem
+                        from rdkit import RDLogger
+
+                        RDLogger.DisableLog('rdApp.*')
+                        for i in range(len(new_columns)):
+                            val = str(df.iloc[0, i]).strip()
+                            if not val or len(val) < 1:
+                                continue
+                            if Chem.MolFromSmiles(val) is not None:
+                                smiles_idx = i
+                                break
+                        RDLogger.EnableLog('rdApp.*')
+
+                if id_pos is not None and isinstance(id_pos, int) and id_pos < len(new_columns):
+                    id_idx = id_pos
+                else:
+                    id_idx = 1 if smiles_idx == 0 else 0
+
+                if should_rename_smiles and len(new_columns) > smiles_idx and smiles_col:
+                    new_columns[smiles_idx] = smiles_col
+
+                if should_rename_id and len(new_columns) > id_idx and id_col:
+                    new_columns[id_idx] = id_col
 
                 df.columns = new_columns
             df.columns = [str(c) for c in df.columns]

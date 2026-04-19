@@ -317,6 +317,9 @@ class DiptoxPipeline:
         :param id_col: The column name for SMI file's SMILES ID (optional)
         :param sep: CSV file delimiter.
         """
+        if smiles_col is None and isinstance(input_data, str) and input_data.lower().endswith(('.sdf', '.smi')):
+            smiles_col = 'smiles'
+
         user_specified_smiles = smiles_col
         df = self.data_handler.load_data(input_data=input_data, smiles_col=smiles_col, cas_col=cas_col,
                                          target_col=target_col, unit_col=unit_col, inchikey_col=inchikey_col,
@@ -956,6 +959,8 @@ class DiptoxPipeline:
                         self.df.at[original_index, 'Query_Method'] = id_type
                         self.df.at[original_index, 'Query_Status'] = 'Success'
                         processed_indices.append(original_index)
+                    else:
+                        self.df.at[original_index, 'Data_Source'] = res.get('Data_Source')
 
                 pending_indices = [idx for idx in pending_indices if idx not in processed_indices]
 

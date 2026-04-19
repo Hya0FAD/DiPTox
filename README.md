@@ -1,6 +1,6 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda Version](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md)
+[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md) [![PyPI Downloads](https://static.pepy.tech/badge/diptox)](https://pepy.tech/project/diptox) [![Conda Downloads](https://img.shields.io/conda/dn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
@@ -18,6 +18,9 @@ We are excited to announce the first official stable release of DiPTox on PyPI! 
 * **Enhanced Data Loading**:
     * Switched to binary stream parsing for `.sdf` and `.mol` files to resolve encoding crashes (e.g., `utf-8` vs `latin-1`).
     * Auto-parsing of molecular structures to generate SMILES even when properties are missing.
+### Version Update Log (1.0.6)
+* **Data Loading Fixes**: Fixed and optimized the native parsing logic for `.smi` (SMILES) files, resolving previous reading issues to ensure stable ingestion of large-scale chemical databases.
+* **Web Request Module Overhaul**: Completely refactored the network request engine for stability and transparency. This update introduces a "Capability Map" and fast-fail logic to intelligently intercept unsupported queries and Auth/404 errors (eliminating infinite retry deadlocks). Furthermore, it eradicates "silent failures" by logging highly granular failure reasons (e.g., `Failed -> pubchem: Not Found | chemspider: Auth Error (401)`), and implements field-level data provenance to strictly record the exact source for each molecular property, drastically improving dataset auditability.
 ### Version Update Log (1.0.5)
 * **Enhanced Unit Standardization**: Added support for the standard math operator `^` (power) by automatically mapping it to `**`, and fixed a logic error that caused single-unit datasets to be skipped even when a different target unit was specified.
 * **Deduplication Logic Upgrades**: Introduced a `log10` transformation mode alongside the existing `-log10` option, enabling support for both toxicity data (pIC50) and physicochemical properties like water solubility (logS) or partition coefficients.

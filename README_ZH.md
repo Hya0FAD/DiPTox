@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda Version](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)
+[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)  [![PyPI下载量](https://static.pepy.tech/badge/diptox)](https://pepy.tech/project/diptox) [![Conda下载量](https://img.shields.io/conda/dn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">
@@ -20,6 +20,9 @@
 * **增强的数据加载**：
     * 切换至二进制流解析模式读取 `.sdf` 和 `.mol` 文件，彻底解决编码崩溃问题（如 `utf-8` 与 `latin-1` 混淆）。
     * 自动分子结构解析：即使文件中缺少属性列，也能直接从结构块生成 SMILES。
+### 版本更新日志 (1.0.6)
+* **数据读取修复**：修复并优化了对原生 `.smi` (SMILES) 文件的读取逻辑，解决了先前版本中的解析问题，确保大规模化学数据库的稳定加载。
+* **Web Request 网络模块全面重构**：针对大规模并发请求进行了加固。引入“能力清单”与针对语义/鉴权错误的短路拦截逻辑（Fast-Fail），消灭了无效重试死循环；同时清除了数据抓取中的“静默失败”现象，将极高颗粒度的精确死因（如 `Failed -> pubchem: Not Found | chemspider: Auth Error (401)`）以及精确到“字段级”的数据溯源记录直接写入结果中，使 API 调试完全透明，极大提升了毒理学数据集的审计置信度。
 ### 版本更新日志(1.0.5)
 * **增强的单位标准化**：新增对常用数学符号 `^`（幂运算）的支持并自动映射为 `**`， 同时修复了当数据集中仅存在单一单位时系统会强制跳过转换程序的逻辑漏洞。
 * **去重逻辑功能升级**：在原有的 `-log10` 基础上新增了 `log10` 转换选项， 使工具包不仅能处理毒性数据（pIC50），还能完美适配水溶解度（logS）或分配系数等理化性质的去重需求。

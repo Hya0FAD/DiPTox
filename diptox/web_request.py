@@ -18,6 +18,15 @@ logger = log_manager.get_logger(__name__)
 
 
 try:
+    from packaging.version import parse as parse_version
+except ImportError:
+    def parse_version(version_str):
+        if not version_str:
+            return (0, 0, 0)
+        clean_str = re.sub(r'[^0-9.]', '', version_str)
+        return tuple(map(int, clean_str.split('.'))) if clean_str else (0, 0, 0)
+
+try:
     import pubchempy
     _PUBCHEMPY_AVAILABLE = True
     logging.getLogger('pubchempy').setLevel(logging.WARNING)
@@ -33,7 +42,6 @@ except ImportError:
 try:
     import ctxpy as ctx
     from importlib.metadata import version
-    from packaging.version import parse as parse_version
 
     _current_ctx_version = version("ctx-python")
 
@@ -107,12 +115,19 @@ class WebService:
 
         self.session = requests.Session()
         retry_strategy = Retry(
-            total=retries,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
+            total=3,
+            connect=3,
+            read=3,
+            status=0,
+            backoff_factor=0.1,
             allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=100,
+            pool_maxsize=100
+        )
 
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
@@ -143,6 +158,23 @@ class WebService:
                 logger.warning(f"An invalid data source has been specified: {source}")
                 continue
 
+        self._supported_props = {
+            DataSource.PUBCHEM: {'smiles', 'cas', 'iupac', 'mw', 'name'},
+            DataSource.CHEMSPIDER: {'smiles', 'mw', 'name'},
+            DataSource.COMPTOX: {'smiles', 'cas', 'iupac', 'mw', 'name'},
+            DataSource.CACTUS: {'smiles', 'cas', 'iupac', 'mw', 'name'},
+            DataSource.CHEMBL: {'smiles', 'iupac', 'mw', 'name'},
+            DataSource.CAS: {'smiles', 'cas', 'mw', 'name'}
+        }
+
+        self._supported_id_types = {
+            DataSource.PUBCHEM: {'smiles', 'cas', 'name'},
+            DataSource.CHEMSPIDER: {'smiles', 'cas', 'name'},
+            DataSource.COMPTOX: {'smiles', 'cas', 'name'},
+            DataSource.CACTUS: {'smiles', 'cas', 'name'},
+            DataSource.CHEMBL: {'smiles', 'name'},
+            DataSource.CAS: {'smiles', 'cas', 'name'}
+        }
     def _increment_request_count(self):
         """
         Increment the request count and check if a break is needed.
@@ -176,6 +208,7 @@ class WebService:
                              progress_callback: Optional[Callable[[int, int], None]] = None) \
             -> List[Dict[str, Optional[str]]]:
         """Batch acquisition of attributes, using multiple threads internally."""
+
         def is_valid_id(identifier):
             if identifier is None:
                 return False
@@ -184,10 +217,9 @@ class WebService:
             if isinstance(identifier, str) and not identifier.strip():
                 return False
             return True
+
         unique_identifiers = list(set([i for i in identifiers if is_valid_id(i)]))
         results_map = {}
-        default_error_result = {prop: None for prop in properties}
-        default_error_result['Data_Source'] = 'Error'
 
         total_tasks = len(unique_identifiers)
         completed_count = 0
@@ -204,19 +236,24 @@ class WebService:
                 try:
                     results_map[identifier] = future.result()
                 except Exception as e:
-                    logger.error(f"An error occurred while processing the identifier '{identifiers}': {e}")
-                    results_map[identifier] = default_error_result
+                    logger.error(f"An error occurred while processing the identifier '{identifier}': {e}")
+                    error_res: Dict[str, Optional[str]] = {prop: None for prop in properties}
+                    error_res['Data_Source'] = f"Thread Crash: {type(e).__name__}"
+                    results_map[identifier] = error_res
                 completed_count += 1
                 if progress_callback:
                     progress_callback(completed_count, total_tasks)
+
         final_results = []
         for original_id in identifiers:
             if is_valid_id(original_id) and original_id in results_map:
                 final_results.append(results_map[original_id])
             else:
-                empty_res = {prop: None for prop in properties}
-                if is_valid_id(original_id):
-                    empty_res['Data_Source'] = 'Error'
+                empty_res: Dict[str, Optional[str]] = {prop: None for prop in properties}
+                if not is_valid_id(original_id):
+                    empty_res['Data_Source'] = 'Invalid Identifier'
+                else:
+                    empty_res['Data_Source'] = 'Processing Failed (Missing from Results)'
                 final_results.append(empty_res)
         return final_results
 
@@ -228,7 +265,8 @@ class WebService:
         final_result: Dict[str, Optional[str]] = {prop: None for prop in properties}
         final_result['Data_Source'] = None
         needed_props = properties.copy()
-        contributing_sources = set()
+        source_to_fields: Dict[str, List[str]] = {}
+        source_errors = []
 
         for source in self.sources:
             if not needed_props:
@@ -237,22 +275,51 @@ class WebService:
             if not fetch_fn:
                 continue
 
+            if identifier_type not in self._supported_id_types.get(source, set()):
+                source_errors.append(f"{source}: Unsupported Input Type ('{identifier_type}')")
+                continue
+
+            supported_for_source = self._supported_props.get(source, set())
+            props_to_request = needed_props.intersection(supported_for_source)
+
+            if not props_to_request:
+                source_errors.append(f"{source}: Unsupported Output Props")
+                continue
+
             try:
                 source_result = self._retry_wrapper(fetch_fn, identifier, needed_props, identifier_type)
+
+                if not source_result:
+                    source_errors.append(f"{source}: Not Found")
+                    continue
+
                 found_this_round = set()
                 for prop, value in source_result.items():
                     if prop in needed_props and value is not None:
                         final_result[prop] = value
                         found_this_round.add(prop)
+
                 if found_this_round:
-                    contributing_sources.add(source)
+                    source_to_fields[source] = list(found_this_round)
                     needed_props -= found_this_round
 
-            except Exception as e:
-                logger.warning(f"Data source '{source}' failed to query '{identifier}': {e}. Trying the next one.")
+                missing_but_supported = props_to_request - found_this_round
+                if missing_but_supported:
+                    source_errors.append(f"{source}: Missing {list(missing_but_supported)}")
 
-        if contributing_sources:
-            final_result['Data_Source'] = ", ".join(sorted(list(contributing_sources)))
+            except Exception as e:
+                err_msg = str(e)
+                source_errors.append(f"{source}: {err_msg}")
+                logger.debug(f"Data source '{source}' failed to query '{identifier}': {e}. Trying the next one.")
+
+        if source_to_fields:
+            parts = [f"{src} ({', '.join(sorted(fields))})" for src, fields in source_to_fields.items()]
+            final_result['Data_Source'] = " | ".join(parts)
+        else:
+            if source_errors:
+                final_result['Data_Source'] = "Failed -> " + " | ".join(source_errors)
+            else:
+                final_result['Data_Source'] = "Failed -> Unsupported Query Strategy"
 
         return final_result
 
@@ -262,29 +329,54 @@ class WebService:
                        properties: Set[str],
                        identifier_type: str) -> Dict[str, Any]:
         """Wrapper that implements retry logic for failed requests."""
+        last_error = None
+        source_name = func.__name__.replace('_fetch_via_', '')
         for attempt in range(self.retries):
             try:
                 time.sleep(self.interval)
                 return func(identifier, properties, identifier_type)
-            except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code:
-                    status_code = e.response.status_code
-                    if 400 <= status_code < 500:
-                        return {prop: None for prop in properties}
-                    elif 500 <= status_code < 600:
-                        logger.warning(
-                            f"The {attempt + 1}/{self.retries} attempt failed (server error {status_code}): {identifier} at {func.__name__}")
-                else:
-                    logger.warning(
-                        f"On the {attempt + 1}/{self.retries} attempt, the operation failed (HTTP error, no status code): {identifier} at {func.__name__}: {e}")
-            except requests.exceptions.RequestException as e:
-                logger.warning(
-                    f"On the {attempt + 1}/{self.retries} attempt, the operation failed (network error): {identifier} at {func.__name__}: {e}")
+
+            except Exception as e:
+                last_error = str(e) or type(e).__name__
+                error_msg_lower = last_error.lower()
+
+                is_not_found = ((isinstance(e, requests.exceptions.HTTPError) and e.response.status_code in [400,404])
+                                or any(kw in error_msg_lower for kw in
+                                       ['400', '404', 'not found', 'invalid query', 'no record']))
+
+                if is_not_found:
+                    return {}
+
+                is_auth_error = ((isinstance(e, requests.exceptions.HTTPError) and e.response.status_code in [401,403])
+                                 or any(kw in error_msg_lower for kw in
+                                        ['api key', 'unauthorized', 'forbidden', '401', '403']))
+
+                if is_auth_error:
+                    raise RuntimeError(f"Auth Error: {last_error}")
+
+                if '429' in error_msg_lower or 'rate limit' in error_msg_lower:
+                    last_error = "Rate Limit Exceeded (429)"
+                elif any(kw in error_msg_lower for kw in ['500', '502', '503', '504', 'server error']):
+                    import re
+                    match = re.search(r'(50[0-4])', last_error)
+                    code = match.group(1) if match else "5xx"
+                    last_error = f"Server Error ({code})"
+                elif any(kw in error_msg_lower for kw in ['timeout', 'timed out']):
+                    last_error = "Timeout"
+                elif 'connection' in error_msg_lower:
+                    last_error = "Connection Error"
+
             if attempt < self.retries - 1:
-                time.sleep(self.delay * (attempt + 1))
+                sleep_time = self.delay * (attempt + 1)
+                logger.warning(
+                    f"[{source_name}] Query '{identifier[:30]}...' failed ({last_error}). "
+                    f"Retrying {attempt + 1}/{self.retries - 1} in {sleep_time}s..."
+                )
+                time.sleep(sleep_time)
             else:
-                logger.error(f"All {self.retries} attempts failed: {identifier} at {func.__name__}")
-        return {prop: None for prop in properties}
+                logger.debug(f"All {self.retries} attempts failed for '{identifier}'")
+
+        raise RuntimeError(last_error)
 
     def _validate_and_clean_cas(self, cas: str) -> Optional[str]:
         if pd.isna(cas):
@@ -331,12 +423,15 @@ class WebService:
             if not hasattr(self, '_pubchem_version_warned'):
                 logger.warning(
                     f"Detected PubChemPy version {current_version}. "
-                    f"It is strongly recommended to update to v1.0.5+ (`pip install pubchempy --upgrade`) "
-                    f"to resolve potential data retrieval issues."
+                    f"It is strongly recommended to update to v1.0.5+ (`pip install pubchempy --upgrade`)"
                 )
                 self._pubchem_version_warned = True
 
-            compounds = pubchempy.get_compounds(identifier, id_type_map[id_type])
+            try:
+                compounds = pubchempy.get_compounds(identifier, id_type_map[id_type])
+            except Exception as e:
+                raise RuntimeError(f"PubChem SDK error: {str(e)}")
+
             result = {}
             if compounds:
                 c = compounds[0]
@@ -356,31 +451,30 @@ class WebService:
         else:
             try:
                 compounds = pubchempy.get_compounds(identifier, id_type_map[id_type])
-                if compounds:
-                    c = compounds[0]
-                    if 'smiles' in properties:
-                        val = getattr(c, 'smiles', None)
-                        if not val:
-                            val = getattr(c, 'connectivity_smiles', None)
-                        result['smiles'] = val
-
-                    if 'iupac' in properties:
-                        result['iupac'] = getattr(c, 'iupac_name', None)
-
-                    if 'mw' in properties:
-                        result['mw'] = getattr(c, 'molecular_weight', None)
-
-                    if 'cas' in properties or 'name' in properties:
-                        syns = c.synonyms
-                        if syns:
-                            if 'name' in properties:
-                                result['name'] = syns[0]
-                            if 'cas' in properties:
-                                result['cas'] = next((syn for syn in syns if self._validate_and_clean_cas(syn)), None)
-
             except Exception as e:
-                logger.warning(f"PubChem SDK (v{current_version}) error for {identifier}: {e}")
-                return {}
+                raise RuntimeError(f"PubChem SDK error: {str(e)}")
+
+            if compounds:
+                c = compounds[0]
+                if 'smiles' in properties:
+                    val = getattr(c, 'smiles', None)
+                    if not val:
+                        val = getattr(c, 'connectivity_smiles', None)
+                    result['smiles'] = val
+
+                if 'iupac' in properties:
+                    result['iupac'] = getattr(c, 'iupac_name', None)
+
+                if 'mw' in properties:
+                    result['mw'] = getattr(c, 'molecular_weight', None)
+
+                if 'cas' in properties or 'name' in properties:
+                    syns = c.synonyms
+                    if syns:
+                        if 'name' in properties:
+                            result['name'] = syns[0]
+                        if 'cas' in properties:
+                            result['cas'] = next((syn for syn in syns if self._validate_and_clean_cas(syn)), None)
 
             return result
 
@@ -399,37 +493,35 @@ class WebService:
         def get_and_parse(id_value: str, id_namespace: str) -> Optional[Dict]:
             parsed_result = {}
 
-            try:
-                prop_url = f"{base_url}/compound/{id_namespace}/{quote(id_value)}/property/{prop_str}/JSON"
-                self._increment_request_count()
-                response = self.session.get(prop_url, timeout=15)
-                if response.status_code == 200:
-                    data = response.json()
-                    if props := data.get('PropertyTable', {}).get('Properties', []):
-                        vals = props[0]
-                        if 'smiles' in properties: parsed_result['smiles'] = vals.get('CanonicalSMILES') or vals.get(
-                            'ConnectivitySMILES')
-                        if 'iupac' in properties: parsed_result['iupac'] = vals.get('IUPACName')
-                        if 'mw' in properties: parsed_result['mw'] = vals.get('MolecularWeight')
-            except requests.exceptions.RequestException:
-                logger.debug(f"Failed to obtain the single-valued attribute for '{id_value}'")
+            prop_url = f"{base_url}/compound/{id_namespace}/{quote(id_value)}/property/{prop_str}/JSON"
+            self._increment_request_count()
+            response = self.session.get(prop_url, timeout=15)
+
+            if response.status_code == 404:
                 return None
+            response.raise_for_status()
+
+            data = response.json()
+            if props := data.get('PropertyTable', {}).get('Properties', []):
+                vals = props[0]
+                if 'smiles' in properties: parsed_result['smiles'] = vals.get('CanonicalSMILES') or vals.get(
+                    'ConnectivitySMILES')
+                if 'iupac' in properties: parsed_result['iupac'] = vals.get('IUPACName')
+                if 'mw' in properties: parsed_result['mw'] = vals.get('MolecularWeight')
 
             if 'name' in properties or 'cas' in properties:
-                try:
-                    syn_url = f"{base_url}/compound/{id_namespace}/{quote(id_value)}/synonyms/JSON"
-                    self._increment_request_count()
-                    syn_response = self.session.get(syn_url, timeout=15)
-                    if syn_response.status_code == 200:
-                        syn_data = syn_response.json()
-                        if synonyms := syn_data.get('InformationList', {}).get('Information', [{}])[0].get('Synonym'):
-                            if 'name' in properties:
-                                parsed_result['name'] = synonyms[0]
-                            if 'cas' in properties:
-                                parsed_result['cas'] = next(
-                                    (syn for syn in synonyms if self._validate_and_clean_cas(syn)), None)
-                except requests.exceptions.RequestException:
-                    logger.debug(f"Failed to obtain synonyms for '{id_value}'")
+                syn_url = f"{base_url}/compound/{id_namespace}/{quote(id_value)}/synonyms/JSON"
+                self._increment_request_count()
+                syn_response = self.session.get(syn_url, timeout=15)
+                if syn_response.status_code != 404:
+                    syn_response.raise_for_status()
+                    syn_data = syn_response.json()
+                    if synonyms := syn_data.get('InformationList', {}).get('Information', [{}])[0].get('Synonym'):
+                        if 'name' in properties:
+                            parsed_result['name'] = synonyms[0]
+                        if 'cas' in properties:
+                            parsed_result['cas'] = next((syn for syn in synonyms if self._validate_and_clean_cas(syn)),
+                                                        None)
 
             return parsed_result if parsed_result else None
 
@@ -437,17 +529,17 @@ class WebService:
         if result:
             return result
 
-        try:
-            cid_url = f"{base_url}/compound/{id_type_map[id_type]}/{quote(identifier)}/cids/JSON"
-            self._increment_request_count()
-            cid_response = self.session.get(cid_url, timeout=15)
-            if cid_response.status_code == 200:
-                if cids := cid_response.json().get('IdentifierList', {}).get('CID'):
-                    result = get_and_parse(cids[0], 'cid')
-                    if result:
-                        return result
-        except requests.exceptions.RequestException:
-            logger.warning(f"Failed to query PubChem through CID fallback for '{identifier}'")
+        cid_url = f"{base_url}/compound/{id_type_map[id_type]}/{quote(identifier)}/cids/JSON"
+        self._increment_request_count()
+        cid_response = self.session.get(cid_url, timeout=15)
+        if cid_response.status_code == 404:
+            return {}
+        cid_response.raise_for_status()
+
+        if cids := cid_response.json().get('IdentifierList', {}).get('CID'):
+            result = get_and_parse(str(cids[0]), 'cid')
+            if result:
+                return result
 
         return {}
 
@@ -477,10 +569,10 @@ class WebService:
             if status == 'Complete':
                 break
             if status == 'Failed':
-                return {}
+                raise RuntimeError("ChemSpider SDK Filter Task Failed")
             time.sleep(2)
         else:
-            return {}
+            raise RuntimeError("ChemSpider SDK Task Timeout")
 
         results_csids = cs.filter_results(query_id)
         if not results_csids:
@@ -539,6 +631,7 @@ class WebService:
             "Accept": "application/json"
         }
 
+        # 轮询状态
         for _ in range(3):
             self._increment_request_count()
             status_response = self.session.get(status_url, headers=headers_get, timeout=15)
@@ -548,11 +641,10 @@ class WebService:
             if status == 'Complete':
                 break
             if status == 'Failed':
-                return {}
+                raise RuntimeError("ChemSpider Filter Task Failed")
             time.sleep(2)
         else:
-            logger.warning(f"ChemSpider search for '{identifier}' timed out.")
-            return {}
+            raise RuntimeError("ChemSpider Task Timeout")
 
         results_url = f"https://api.rsc.org/compounds/v1/filter/{query_id}/results"
         self._increment_request_count()
@@ -573,6 +665,7 @@ class WebService:
 
         self._increment_request_count()
         response_get_details = self.session.get(detail_url, headers=headers_get, timeout=15)
+        response_get_details.raise_for_status()
         detail_data = response_get_details.json()
 
         result = {}
@@ -591,7 +684,7 @@ class WebService:
         try:
             mol = Chem.MolFromSmiles(smiles)
             if not mol:
-                logger.warning(f"Unable to parse SMILES to generate InChIKey: {smiles}")
+                logger.debug(f"Unable to parse SMILES to generate InChIKey: {smiles}")
                 return None
             return Chem.MolToInchiKey(mol)
         except Exception as e:
@@ -606,7 +699,7 @@ class WebService:
         try:
             mol = Chem.MolFromSmiles(smiles)
             if not mol:
-                logger.warning(f"Unable to parse SMILES to generate InChI: {smiles}")
+                logger.debug(f"Unable to parse SMILES to generate InChI: {smiles}")
                 return None
             return Chem.MolToInchi(mol)
         except Exception as e:
@@ -748,6 +841,10 @@ class WebService:
             if url_suffix := prop_map.get(prop):
                 self._increment_request_count()
                 resp = self.session.get(f"{base_url}/{url_suffix}", timeout=10)
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+
                 if resp.ok and resp.text:
                     text_content = resp.text.strip()
                     if not text_content:
@@ -786,9 +883,10 @@ class WebService:
         result = {}
         if mols := data.get('molecules'):
             mol = mols[0]
-            props = mol.get('molecule_properties', {})
+            props = mol.get('molecule_properties') or {}
+            structs = mol.get('molecule_structures') or {}
             if 'smiles' in properties:
-                result['smiles'] = mol.get('molecule_structures', {}).get('canonical_smiles')
+                result['smiles'] = structs.get('canonical_smiles')
             if 'iupac' in properties and mol.get('pref_name'):
                 result['iupac'] = mol.get('pref_name')
             if 'mw' in properties:
@@ -813,55 +911,48 @@ class WebService:
         params = {'q': identifier}
 
         self._increment_request_count()
-        try:
-            search_response = self.session.get(search_url, params=params, headers=headers, timeout=15)
-            if search_response.status_code == 404:
-                return {}
-            search_response.raise_for_status()
 
-            search_data = search_response.json()
-            if not search_data.get('count', 0) > 0 or not search_data.get('results'):
-                return {}
-
-            first_result = search_data['results'][0]
-            cas_rn = first_result.get('rn')
-            if not cas_rn:
-                return {}
-
-            detail_url = f"{base_url}/detail"
-            detail_params = {'cas_rn': cas_rn}
-
-            self._increment_request_count()
-            detail_response = self.session.get(detail_url, params=detail_params, headers=headers, timeout=15)
-
-            if detail_response.status_code == 404:
-                return {}
-            detail_response.raise_for_status()
-
-            detail_data = detail_response.json()
-            if not detail_data:
-                return {}
-
-            result = {}
-            if 'smiles' in properties:
-                result['smiles'] = detail_data.get('canonicalSmile') or detail_data.get('smile')
-
-            if 'mw' in properties:
-                result['mw'] = detail_data.get('molecularMass')
-
-            if 'cas' in properties:
-                result['cas'] = detail_data.get('rn')
-
-            if 'name' in properties:
-                result['name'] = detail_data.get('name')
-                if not result['name'] and detail_data.get('synonyms'):
-                    result['name'] = detail_data['synonyms'][0]
-
-            return result
-
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"CAS API request failed for '{identifier}': {e}")
+        search_response = self.session.get(search_url, params=params, headers=headers, timeout=15)
+        if search_response.status_code == 404:
             return {}
-        except Exception as e:
-            logger.warning(f"CAS API processing error for '{identifier}': {e}")
+        search_response.raise_for_status()
+
+        search_data = search_response.json()
+        if not search_data.get('count', 0) > 0 or not search_data.get('results'):
             return {}
+
+        first_result = search_data['results'][0]
+        cas_rn = first_result.get('rn')
+        if not cas_rn:
+            return {}
+
+        detail_url = f"{base_url}/detail"
+        detail_params = {'cas_rn': cas_rn}
+
+        self._increment_request_count()
+        detail_response = self.session.get(detail_url, params=detail_params, headers=headers, timeout=15)
+
+        if detail_response.status_code == 404:
+            return {}
+        detail_response.raise_for_status()
+
+        detail_data = detail_response.json()
+        if not detail_data:
+            return {}
+
+        result = {}
+        if 'smiles' in properties:
+            result['smiles'] = detail_data.get('canonicalSmile') or detail_data.get('smile')
+
+        if 'mw' in properties:
+            result['mw'] = detail_data.get('molecularMass')
+
+        if 'cas' in properties:
+            result['cas'] = detail_data.get('rn')
+
+        if 'name' in properties:
+            result['name'] = detail_data.get('name')
+            if not result['name'] and detail_data.get('synonyms'):
+                result['name'] = detail_data['synonyms'][0]
+
+        return result
