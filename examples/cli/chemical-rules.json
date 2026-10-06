@@ -1,0 +1,9 @@
+{
+  "atoms": {"add": ["Xe"], "remove": []},
+  "salts": {"add": ["[Na+]"], "remove": []},
+  "solvents": {"add": ["CCOCC"], "remove": []},
+  "neutralization": {
+    "add": [{"reactant": "[O-;X1]", "product": "O"}],
+    "remove": []
+  }
+}

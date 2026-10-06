@@ -1,12 +1,6 @@
-# diptox/__init__.py
-from .core import DiptoxPipeline
-from .chem_processor import ChemistryProcessor
-from .web_request import WebService
-from .data_io import DataHandler
-from .data_deduplicator import DataDeduplicator
-from .logger import LogManager
-from .substructure_search import SubstructureSearcher
-from .unit_processor import UnitProcessor
+"""DiPTox's public API, loaded on demand for lightweight command discovery."""
+
+from importlib import import_module
 
 __all__ = ["DiptoxPipeline",
            "ChemistryProcessor",
@@ -17,4 +11,28 @@ __all__ = ["DiptoxPipeline",
            "SubstructureSearcher",
            "UnitProcessor"
            ]
-__version__ = "1.0.6"
+__version__ = "1.1.0"
+
+_PUBLIC_MODULES = {
+    "DiptoxPipeline": "core",
+    "ChemistryProcessor": "chem_processor",
+    "WebService": "web_request",
+    "DataHandler": "data_io",
+    "DataDeduplicator": "data_deduplicator",
+    "LogManager": "logger",
+    "SubstructureSearcher": "substructure_search",
+    "UnitProcessor": "unit_processor",
+}
+
+
+def __getattr__(name):
+    module = _PUBLIC_MODULES.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f".{module}", __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

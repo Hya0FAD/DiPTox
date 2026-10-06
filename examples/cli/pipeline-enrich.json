@@ -1,0 +1,35 @@
+{
+  "schema_version": "1",
+  "input": {
+    "path": "data-enrich.csv",
+    "columns": {
+      "name": "Name",
+      "id": "ID"
+    }
+  },
+  "steps": [
+    {
+      "op": "enrich",
+      "params": {
+        "sources": ["pubchem"],
+        "send": ["name"],
+        "request": ["smiles", "cas", "iupac", "mw"],
+        "max_workers": 4,
+        "timeout": 15,
+        "deadline": 120,
+        "retries": 2,
+        "retry_delay": 1,
+        "interval": 0.3
+      }
+    },
+    {"op": "preprocess"},
+    {"op": "inchi"}
+  ],
+  "output": {
+    "path": "output-enrich/enriched.csv",
+    "excluded_path": "output-enrich/excluded.csv",
+    "report_path": "output-enrich/report.json"
+  },
+  "overwrite": false,
+  "strict": false
+}

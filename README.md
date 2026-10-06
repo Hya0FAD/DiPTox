@@ -1,38 +1,19 @@
 # DiPTox - Data Integration and Processing for Computational Toxicology
 
-[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md) [![PyPI Downloads](https://static.pepy.tech/badge/diptox)](https://pepy.tech/project/diptox) [![Conda Downloads](https://img.shields.io/conda/dn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox)
+[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.10+-brightgreen.svg) [![Chinese](https://img.shields.io/badge/-%E4%B8%AD%E6%96%87%E7%89%88-blue.svg)](./README_ZH.md) [![PyPI Downloads](https://static.pepy.tech/badge/diptox)](https://pepy.tech/project/diptox) [![Conda Downloads](https://img.shields.io/conda/dn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox)
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox Workflow Diagram" width="500">
 </p>
 **DiPTox** is a Python toolkit designed for the robust preprocessing, standardization, and multi-source data integration of molecular datasets, with a focus on computational toxicology workflows.
 
-## Official Release v1.0
-We are excited to announce the first official stable release of DiPTox on PyPI! This milestone brings production-ready stability and performance enhancements:
+## v1.1.0 Updates
 
-* **Multi-Process Acceleration**:
-    * Accelerate chemical preprocessing tasks by **10x or more** using the `n_jobs` parameter.
-    * Intelligent task distribution across CPU cores for heavy datasets.
-* **Cross-Platform Robustness**:
-    * Implemented a specialized **"Guard Mechanism"** for Windows multiprocessing to prevent memory explosion and recursive process spawning issues.
-    * Verified stability across Windows, Linux, and macOS environments.
-* **Enhanced Data Loading**:
-    * Switched to binary stream parsing for `.sdf` and `.mol` files to resolve encoding crashes (e.g., `utf-8` vs `latin-1`).
-    * Auto-parsing of molecular structures to generate SMILES even when properties are missing.
-### Version Update Log (1.0.6)
-* **Data Loading Fixes**: Fixed and optimized the native parsing logic for `.smi` (SMILES) files, resolving previous reading issues to ensure stable ingestion of large-scale chemical databases.
-* **Web Request Module Overhaul**: Completely refactored the network request engine for stability and transparency. This update introduces a "Capability Map" and fast-fail logic to intelligently intercept unsupported queries and Auth/404 errors (eliminating infinite retry deadlocks). Furthermore, it eradicates "silent failures" by logging highly granular failure reasons (e.g., `Failed -> pubchem: Not Found | chemspider: Auth Error (401)`), and implements field-level data provenance to strictly record the exact source for each molecular property, drastically improving dataset auditability.
-### Version Update Log (1.0.5)
-* **Enhanced Unit Standardization**: Added support for the standard math operator `^` (power) by automatically mapping it to `**`, and fixed a logic error that caused single-unit datasets to be skipped even when a different target unit was specified.
-* **Deduplication Logic Upgrades**: Introduced a `log10` transformation mode alongside the existing `-log10` option, enabling support for both toxicity data (pIC50) and physicochemical properties like water solubility (logS) or partition coefficients.
-* **Robustness & Error Handling**: Implemented strict numerical validation using `errors='coerce'` in standardization and deduplication modules to automatically filter out invalid strings (e.g., "N/A", ">100") with clear warning feedback in the GUI.
-* **Critical State Management Fix**: Resolved an issue where `load_data` failed to reset the `_preprocess_key` flag, ensuring that automatic column mapping logic for Web Requests (like auto-detecting `smiles_from_web`) functions correctly after a new dataset is loaded.
-### Version Update Log (1.0.4)
-* **GUI State Management Fix**: Resolved a `StreamlitAPIException` on the Export page that occurred when using the "Undo Last Step" feature. Implemented proper `on_click` callbacks to safely mutate the `session_state` (specifically for `export_selected_cols`) before the UI re-renders, ensuring a crash-free and seamless undo experience.
-* **Refined Preprocessing Rules**: Adjusted and optimized several default charge neutralization rules.
-### Version Update Log (1.0.3)
-* **Enhanced Unit Standardization**: Custom conversion formulas now fully support molecular weight (`mw`). You can seamlessly convert between molarity and mass concentrations (e.g., using formulas like `x * mw * 1000`).
-* **GUI Interface Optimization**: The Streamlit graphical interface has been beautifully redesigned for a more professional, clean, and logical scientific layout. We've reduced visual clutter, grouped configuration panels intuitively, and improved component alignment.
-* **Comprehensive Audit Log (History)**: The processing history has been heavily upgraded. It now records granular parameters for every operation—including exactly which preprocessing rules were triggered, active deduplication conditions, web query statuses, and substructure search match counts.
+- **CLI and JSON pipelines**: Added a command-line entry point for agents and scripts, with discovery, data inspection, configuration preflight, preprocessing, unit conversion, deduplication, substructure search, atom-count filtering, and InChI calculation.
+- **Network enrichment and chemical rules**: Query multiple sources with rate limits, retries, a total deadline, and field provenance; configure chemical rules for each invocation through JSON.
+- **NiceGUI interface**: Keep settings across pages and run long operations in the background. Jobs that modify data commit their results only after completion.
+- **Results and audit**: The CLI provides structured JSON responses, defined exit codes, source-row tracking, exclusion records, and completion reports for reproducible processing.
+
+See the [CLI Guide](docs/CLI.md) for usage and the [Changelog](CHANGELOG.md#english) for current and previous version notes.
 
 ## DiPTox Community Check-in (Optional)
 To help us understand our user base and improve the software, DiPTox includes a one-time, optional survey on first use. 
@@ -42,8 +23,9 @@ To help us understand our user base and improve the software, DiPTox includes a 
 ## Core Features
 
 #### 1. Graphical User Interface (GUI)
-Powered by Streamlit, the GUI allows users to perform all workflows visually without writing code.
--   **Visual Operation**: Complete workflow control via a web browser.
+Powered by NiceGUI, the local web interface allows users to perform all workflows visually without writing code.
+-   **Persistent Pages**: Configuration values remain intact while navigating between workflow steps.
+-   **Responsive Jobs**: Long-running processing and network operations do not block page navigation.
 -   **Real-time Preview**: Instantly view data changes after applying rules.
 -   **Rule Management**: Add/Remove valid atoms, salts, solvents, and **unit conversion formulas** interactively.
 -   **Smart Column Mapping**: Intelligent detection of headers and binary file structures.
@@ -70,7 +52,8 @@ Normalize heterogeneous target data into a single unit effortlessly.
 #### 4. Data Deduplication
 Flexible strategies for handling duplicate entries with advanced controls.
 -   **Data Types**: Supports `continuous` (e.g., IC50) and `discrete` (e.g., Active/Inactive) targets.
--   **Methods**: `auto`, `IQR`, `3sigma`, `vote`, or custom priority rules.
+-   **Continuous values**: `method="auto"`, `"IQR"`, or `"3sigma"` selects outlier filtering; `aggregation="mean"`, `"max"`, or `"min"` selects aggregation of the remaining values. Defaults: auto + mean. Groups of at most 3 skip filtering.
+-   **Discrete values**: `method="vote"` or `"priority"`.
 -   **Log Transformation**: Optional `-log10` transformation (e.g., IC50 $\to$ pIC50) applied *before* deduplication logic to handle bioactivity data correctly.
 -   **Flexible NaN Handling**: Option to retain rows with missing conditions (treating *NaN* as a valid group) instead of dropping them.
 
@@ -122,7 +105,13 @@ After installation, you can launch the graphical interface directly from your te
 diptox-gui
 ```
 
-This command will automatically open the DiPTox interface in your default web browser.
+This command starts DiPTox locally and opens the interface in your default browser.
+
+## Command-line interface (CLI)
+
+Use the CLI for agents, scripts, and reproducible JSON pipelines. Start with `diptox --help` or `python -m diptox --help`.
+
+See the [CLI Guide](docs/CLI.md) ([Chinese](docs/CLI_ZH.md)) for commands, configuration, chemical rules, network enrichment, and audit outputs.
 
 ## Quick Start
 ```python
@@ -151,17 +140,17 @@ def main():
     DP.preprocess(
         remove_salts=True,              # Remove salt fragments. Default: True.
         remove_solvents=True,           # Remove solvent fragments. Default: True.
-        remove_mixtures=True,           # Handle mixtures based on fragment size. Default: False.
-        hac_threshold=3,                # Heavy atom count threshold for fragment removal. Default: 3.
-        keep_largest_fragment=True,     # Keep the largest fragment in a mixture. Default: True.
+        mixture_mode="reject",          # keep / reject / largest. Default: reject.
+        hac_threshold=3,                # Largest mode requires a unique largest fragment with HAC > 3.
         remove_inorganic=False,         # Remove common inorganic molecules. Default: True.
         neutralize=True,                # Neutralize charges on the molecule. Default: True.
         reject_non_neutral=False,       # Only retain the molecules whose formal charge is zero. Default: False.
-        check_valid_atoms=True,         # Check if all atoms are in the valid list. Default: False.
-        strict_atom_check=False,        # If True, discard molecules with invalid atoms. If False, try to remove them. Default: False.
+        element_policy="allow_all",     # allow_all / reject_metals / allowed_atoms. Default: allow_all.
+                                        # allowed_atoms rejects the whole molecule if any element is unlisted, regardless of atom degree.
         remove_stereo=False,            # Remove stereochemistry information. Default: False.
         remove_isotopes=True,           # Remove isotopic information. Default: True.
         remove_hs=True,                 # Remove explicit hydrogen atoms. Default: True.
+        add_hs=False,                   # Add explicit H after all chemical processing. Default: False.
         reject_radical_species=True,    # Molecules containing free radical atoms are directly rejected. Default: True.
         n_jobs=4                        # Accelerate using 4 CPU cores. Default: 1 
     )
@@ -169,7 +158,9 @@ def main():
     # Configure deduplication and unit standardization
     conversion_rules = {('g/L', 'mg/L'): 'x * 1000', 
                         ('M', 'mg/L'): 'x * mw * 1000',}
-    DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority, standard_unit, conversion_rules, log_transform, dropna_conditions)
+    DP.standardize_units(standard_unit="mg/L", conversion_rules=conversion_rules,
+                         molecular_weight_source="original")
+    DP.config_deduplicator(condition_cols=condition_cols, data_type=data_type, method=method, aggregation="mean")
     DP.dataset_deduplicate()
 
     # Configure web queries
@@ -196,7 +187,23 @@ if __name__ == '__main__':
     main()
 ```
 
+Choose `molecular_weight_source="original"` or `"standardized"`, or provide `molecular_weight_col`, whenever a formula uses `mw`. `standardized` requires preprocessing first; the source remains unset by default. Unit scaling that does not use MW needs no selection. `mixture_mode="largest"` rejects tied largest fragments as `Ambiguous parent`. When `remove_hs` and `add_hs` are both enabled, hydrogen removal happens first and addition happens after all other chemical processing. The Python API retains older mixture/element switches for compatibility; new code should use `mixture_mode` and `element_policy`.
+
+`Canonical SMILES` omits atom-map numbers; the input SMILES and `Original Canonical SMILES` retain source annotations. Salt removal, solvent removal and mixture handling each collapse repeated components only when all remaining components have the same identity: `A.A` becomes `A`, while `A.A.B` is not reduced to `A.B`. Mixture modes apply after this normalization, including `keep`. There is no separate switch. Repeated copies of a single known solvent also collapse to one copy; other selected chemistry rules still apply.
+
+Ethylene glycol (`OCCO`) and 2-methoxyethanol (`COCCO`) are solvent rules, not salt rules. Salt and solvent recognition share whole-fragment matching with support for the `S=O` / `[S+][O-]` representations of sulfoxides such as DMSO. `reject_metals` uses an explicit metal set; noble gases and B, Si, Ge, As, Sb and Te are outside that set. `allowed_atoms` separately checks the user-configured atom list.
+
 ## Advanced Configuration
+
+### Repeated processing and source data
+
+When an imported field conflicts with a generated column, DiPTox preserves it as `Original name (Input)` and updates its mapping automatically. No spreadsheet renaming is needed. SDF export synchronizes explicitly mapped custom structure fields and archives their original declarations.
+
+Neutralization chooses sites in canonical order so equivalent SMILES yield the same result. When component processing is enabled, identical components are collapsed again after neutralization or hydrogen addition; `A.A.B` is still not partially deduplicated. Non-string SMILES are rejected per record without interrupting the batch.
+
+If reprocessing changes the standardized molecular weight, targets depending on the old MW are cleared and marked `Stale standardized molecular weight`. Reconvert from the original concentrations before deduplication; aggregated data requires undo or restoration of the original records. Pure scaling and MW sources independent of the standardized structure remain valid.
+
+`log_transform` preserves input values and writes a separate target with units such as `-log10(M)`. Repeating the same deduplication does not apply the logarithm again. Linear unit conversion rejects logarithmic targets; undo the transformation or select the original linear data first. Newly requested deduplication units are applied, and continuous targets containing `inf/-inf` are excluded.
 
 ### Web Service Integration
 DiPTox supports the following chemical databases:
@@ -224,11 +231,13 @@ DP.config_web_request(
   - `tqdm`
   - `openpyxl`
   - `scipy`
-  - `streamlit>=1.0.0` (Required for GUI)
+  - Python 3.8/3.9: `nicegui==2.24.2`; Python 3.10+: `nicegui>=3.16,<4` (selected automatically during installation)
 - Optional Dependencies (install as needed, if not installed, then send the request using `requests`.):
   - `pubchempy>=1.0.5`: For PubChem integration
   - `chemspipy>=2.0.0`: For ChemSpider (requires API key)
   - `ctx-python>=0.0.1a10`: For CompTox Dashboard (requires API key)
+
+Both Python branches share the current GUI and processing features, including background jobs, chemical rules, unit conversion, deduplication, filtering, and export. Compatibility adapters handle legacy uploads and Python 3.8 background thread execution. Run `python -m pip install .` in the desired Python environment to install this source checkout. Python 3.8/3.9 uses the legacy framework; the GUI binds to localhost (`127.0.0.1`) by default.
 
 ## License
 Apache License 2.0 - See [LICENSE](LICENSE) for details

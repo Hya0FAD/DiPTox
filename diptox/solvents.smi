@@ -12,3 +12,7 @@ Dimethylformamide(DMF)	C(=O)N(C)C
 Hexane	CCCCCC
 Toluene	Cc1ccccc1
 Diethyl ether	CCOCC
+# Identity and solvent role: https://www.ebi.ac.uk/chebi/CHEBI:30742
+Ethanediol (ethylene glycol)	OCCO
+# Identity and solvent role: https://www.ebi.ac.uk/chebi/CHEBI:46790
+2-Methoxyethanol	COCCO

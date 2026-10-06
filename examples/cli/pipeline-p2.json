@@ -1,0 +1,39 @@
+{
+  "schema_version": "1",
+  "input": {
+    "path": "data.csv",
+    "columns": {
+      "smiles": "SMILES",
+      "id": "ID"
+    }
+  },
+  "rules": {
+    "atoms": {"add": ["Xe"]}
+  },
+  "steps": [
+    {
+      "op": "preprocess",
+      "params": {"element_policy": "allowed_atoms"}
+    },
+    {
+      "op": "search",
+      "params": {"query_pattern": "O", "query_type": "smarts", "mode": "matches"}
+    },
+    {
+      "op": "filter-atoms",
+      "params": {"min_heavy_atoms": 3, "max_heavy_atoms": 3}
+    },
+    {"op": "inchi"},
+    {
+      "op": "deduplicate",
+      "params": {"data_type": "smiles"}
+    }
+  ],
+  "output": {
+    "path": "output-p2/clean.csv",
+    "excluded_path": "output-p2/excluded.csv",
+    "report_path": "output-p2/report.json"
+  },
+  "overwrite": false,
+  "strict": false
+}

@@ -5,21 +5,105 @@ import sys
 import pandas as pd
 from typing import Optional, List, Union, Tuple, Callable, Dict, Any
 from functools import partial, wraps
+from copy import deepcopy
 from tqdm import tqdm
 from rdkit import Chem
+from rdkit.Chem import Descriptors
 from datetime import datetime
 import requests
 import multiprocessing as mp
 import platform
-from .chem_processor import ChemistryProcessor
+import re
+from .chem_processor import ChemistryProcessor, AmbiguousFragmentError
+from .element_policy import is_metal
 from .web_request import WebService
 from .data_io import DataHandler
 from .data_deduplicator import DataDeduplicator
 from .substructure_search import SubstructureSearcher
-from .unit_processor import UnitProcessor
+from .unit_processor import UnitProcessor, TARGET_SCALES_ATTR, get_target_scale
+from .column_policy import INITIAL_COLUMNS, PREPROCESS_COLUMNS, source_column_renames
 from .logger import log_manager
 logger = log_manager.get_logger(__name__)
 from diptox import user_reg
+
+
+def _step_failure_message(description: str, mol: Chem.Mol) -> str:
+    """Return a record-level explanation for a failed standardization step."""
+    if description == "Dummy atom check":
+        dummy_count = sum(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms())
+        return f"Dummy atom check failed: structure contains {dummy_count} wildcard atom(s)"
+    if description == "Mixture removal":
+        fragment_count = len(Chem.GetMolFrags(mol))
+        return f"Mixture removal failed: {fragment_count} unresolved components"
+    if description == "Metal check":
+        metals = sorted({
+            atom.GetSymbol() for atom in mol.GetAtoms()
+            if is_metal(atom.GetAtomicNum())
+        })
+        return f"Metal check failed: metal-containing structure ({', '.join(metals)})"
+    if description == "Inorganic removal":
+        if not any(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms()):
+            return "Inorganic removal failed: structure contains no carbon"
+        return "Inorganic removal failed: carbon-containing inorganic exclusion rule matched"
+    if description == "Radical check":
+        radical_atoms = sorted({
+            atom.GetSymbol() for atom in mol.GetAtoms()
+            if atom.GetNumRadicalElectrons() > 0
+        })
+        return f"Radical check failed: unsupported radical center ({', '.join(radical_atoms)})"
+    if description == "Non-neutral rejection":
+        return f"Non-neutral rejection failed: total formal charge is {Chem.GetFormalCharge(mol):+d}"
+    return f"{description} failed"
+
+
+def _standardization_status(is_valid: bool, processing_log: str) -> str:
+    if is_valid:
+        return "Retained"
+    status_markers = [
+        ("Ambiguous parent", "Ambiguous parent"),
+        ("Empty SMILES", "Empty input"),
+        ("Invalid SMILES", "Invalid structure"),
+        ("Dummy atom check", "Dummy atom excluded"),
+        ("Mixture removal", "Mixture excluded"),
+        ("Metal check", "Metal excluded"),
+        ("Inorganic removal", "Inorganic excluded"),
+        ("Radical check", "Radical excluded"),
+        ("Non-neutral rejection", "Charge excluded"),
+        ("Atom validation", "Element excluded"),
+    ]
+    for marker, status in status_markers:
+        if marker in processing_log:
+            return status
+    return "Processing error"
+
+
+def _molecule_metadata(smiles: Any, sanitize: bool = True) -> Dict[str, Any]:
+    """Calculate stable record-level metadata used for parent-mapping audits."""
+    if not isinstance(smiles, str) or not smiles.strip():
+        return {}
+    try:
+        parser = Chem.SmilesParserParams()
+        parser.sanitize = sanitize
+        parser.removeHs = False
+        mol = Chem.MolFromSmiles(smiles, parser)
+        if mol is None:
+            return {}
+        if not sanitize:
+            mol.UpdatePropertyCache(strict=False)
+        metals = sorted({
+            atom.GetSymbol() for atom in mol.GetAtoms()
+            if is_metal(atom.GetAtomicNum())
+        })
+        return {
+            'smiles': Chem.MolToSmiles(mol, canonical=True),
+            'identity': ChemistryProcessor.standardize_smiles(mol),
+            'fragments': len(Chem.GetMolFrags(mol)),
+            'charge': Chem.GetFormalCharge(mol),
+            'mw': Descriptors.MolWt(mol),
+            'metals': metals,
+        }
+    except Exception:
+        return {}
 
 
 def check_data_loaded(func):
@@ -56,13 +140,17 @@ def _worker_preprocess(args: Tuple[str, ChemistryProcessor, Dict[str, Any]]) -> 
     smiles, processor, config = args
     comments = []
 
-    # Early exit for empty smiles
-    if pd.isna(smiles) or str(smiles).strip() == "":
+    # Validate one cell without applying scalar null checks to lists/arrays.
+    if not isinstance(smiles, str):
+        if pd.api.types.is_scalar(smiles) and pd.isna(smiles):
+            return False, "Empty SMILES", None
+        return False, "Invalid SMILES type: expected a string", None
+    if not smiles.strip():
         return False, "Empty SMILES", None
 
     try:
         # 1. Initialization
-        mol = processor.smiles_to_mol(smiles, config['sanitize'])
+        mol = processor.smiles_to_mol(smiles, config['sanitize'], remove_hs=False)
         if mol is None:
             return False, "Invalid SMILES", None
 
@@ -71,6 +159,9 @@ def _worker_preprocess(args: Tuple[str, ChemistryProcessor, Dict[str, Any]]) -> 
         # across processes can sometimes be problematic or inefficient.
         steps = []
         step_descriptions = []
+
+        steps.append(processor.reject_dummy_atoms)
+        step_descriptions.append("Dummy atom check")
 
         if config['remove_stereo']:
             steps.append(processor.remove_stereochemistry)
@@ -92,14 +183,32 @@ def _worker_preprocess(args: Tuple[str, ChemistryProcessor, Dict[str, Any]]) -> 
             steps.append(processor.remove_solvents)
             step_descriptions.append("Solvent removal")
 
-        if config['remove_mixtures']:
+        worker_mixture_mode = config.get('mixture_mode')
+        if worker_mixture_mode is None:
+            worker_mixture_mode = (
+                "keep" if not config.get('remove_mixtures', True)
+                else ("largest" if config.get('keep_largest_fragment', False) else "reject")
+            )
+        mixture_processing_enabled = (
+            config.get('remove_mixtures', True) or worker_mixture_mode != "keep"
+        )
+        if mixture_processing_enabled:
             mixture_processor = partial(
                 processor.remove_mixtures,
                 hac_threshold=config['hac_threshold'],
-                keep_largest=config['keep_largest_fragment']
+                mode=worker_mixture_mode,
             )
             steps.append(mixture_processor)
-            step_descriptions.append("Mixture removal")
+            step_descriptions.append(
+                "Mixture preservation" if worker_mixture_mode == "keep" else "Mixture removal"
+            )
+        else:
+            steps.append(lambda mol: mol)
+            step_descriptions.append("Mixture preservation")
+
+        if config['reject_metal_species']:
+            steps.append(processor.reject_metals)
+            step_descriptions.append("Metal check")
 
         if config['remove_inorganic']:
             steps.append(processor.remove_inorganic)
@@ -112,30 +221,49 @@ def _worker_preprocess(args: Tuple[str, ChemistryProcessor, Dict[str, Any]]) -> 
         if config['neutralize']:
             charge_processor = partial(
                 processor.neutralize_charges,
-                reject_non_neutral=config['reject_non_neutral']
+                reject_non_neutral=False
             )
             steps.append(charge_processor)
-            desc = "Charge neutralization"
-            if config['reject_non_neutral']:
-                desc += " and Non-neutral rejection"
-            step_descriptions.append(desc)
+            step_descriptions.append("Charge neutralization")
+
+        if config['reject_non_neutral']:
+            steps.append(processor.reject_non_neutral)
+            step_descriptions.append("Non-neutral rejection")
 
         if config['check_valid_atoms']:
-            atom_validator = partial(processor.effective_atom, strict=config['strict_atom_check'])
-            steps.append(atom_validator)
+            steps.append(processor.effective_atom)
             step_descriptions.append("Atom validation")
+
+        if config.get('add_hs', False):
+            steps.append(processor.add_hydrogens)
+            step_descriptions.append("Hydrogen addition")
+
+        if config['remove_salts'] or config['remove_solvents'] or mixture_processing_enabled:
+            steps.append(processor.collapse_identical_components)
+            step_descriptions.append("Identical component collapse")
 
         # 3. Execute Pipeline
         for step, desc in zip(steps, step_descriptions):
             if mol is None:
                 break
             try:
+                before = processor.standardize_smiles(mol)
                 processed = step(mol)
                 if processed is None:
-                    comments.append(f"{desc} failed")
+                    comments.append(_step_failure_message(desc, mol))
                     mol = None
                 else:
                     mol = processed
+                    after = processor.standardize_smiles(mol)
+                    if desc == "Mixture preservation" and len(Chem.GetMolFrags(mol)) > 1:
+                        comments.append(
+                            f"Mixture preservation: retained {len(Chem.GetMolFrags(mol))} components"
+                        )
+                    elif before != after:
+                        comments.append(f"{desc}: {before} -> {after}")
+            except AmbiguousFragmentError as e:
+                comments.append(f"Ambiguous parent: {e}")
+                mol = None
             except Exception as e:
                 comments.append(f"{desc} error: {str(e)}")
                 mol = None
@@ -144,6 +272,11 @@ def _worker_preprocess(args: Tuple[str, ChemistryProcessor, Dict[str, Any]]) -> 
         if mol is not None:
             try:
                 std_smiles = processor.standardize_smiles(mol)
+                mapped_atoms = sum(atom.GetAtomMapNum() != 0 for atom in mol.GetAtoms())
+                if mapped_atoms:
+                    comments.append(
+                        f"Atom map removal: omitted {mapped_atoms} mapping label(s) from Canonical SMILES"
+                    )
                 return True, "; ".join(comments) if comments else "Success", std_smiles
             except Exception as e:
                 return False, f"Standardization failed: {str(e)}", None
@@ -157,8 +290,10 @@ def _worker_preprocess(args: Tuple[str, ChemistryProcessor, Dict[str, Any]]) -> 
 class DiptoxPipeline:
     """Main processing class that coordinates various modules."""
 
-    def __init__(self):
-        if platform.system() == "Windows" and mp.current_process().name != 'MainProcess':
+    def __init__(self, interactive: bool = True):
+        """Initialize the pipeline; disable interactive prompts for automation."""
+        self.interactive = interactive
+        if not interactive or (platform.system() == "Windows" and mp.current_process().name != 'MainProcess'):
             pass
         else:
             self._check_initial_registration()
@@ -166,6 +301,8 @@ class DiptoxPipeline:
         self.data_handler = DataHandler()
 
         self.df: Optional[pd.DataFrame] = None
+        self.source_columns: List[str] = []
+        self.excluded_df: pd.DataFrame = pd.DataFrame()
         self.smiles_col: str = "Smiles"
         self.cas_col: Optional[str] = None
         self.name_col: Optional[str] = None
@@ -184,6 +321,11 @@ class DiptoxPipeline:
         self._history = []
         self._max_history = 5
         self._current_dedup_config = None
+        self._structure_derived_columns = set()
+        # Stable row identities live only in the index, never in exported columns.
+        self._source_index_labels = {}
+        self._row_lineage = {}
+        self._input_column_aliases = {}
 
     @staticmethod
     def _check_initial_registration():
@@ -254,14 +396,23 @@ class DiptoxPipeline:
         if self.df is not None:
             snapshot = {
                 'df': self.df.copy(),
+                'excluded_df': self.excluded_df.copy(),
                 'smiles_col': self.smiles_col,
                 'cas_col': self.cas_col,
                 'name_col': self.name_col,
                 'target_col': self.target_col,
                 'unit_col': self.unit_col,
                 'id_col': self.id_col,
+                'inchikey_col': self.inchikey_col,
                 '_preprocess_key': self._preprocess_key,
-                '_units_standardized': self._units_standardized
+                '_units_standardized': self._units_standardized,
+                '_structure_derived_columns': set(self._structure_derived_columns),
+                '_source_index_labels': dict(self._source_index_labels),
+                '_row_lineage': dict(self._row_lineage),
+                'source_columns': list(self.source_columns),
+                '_input_column_aliases': dict(self._input_column_aliases),
+                '_dedup_unit_settings': deepcopy(self._dedup_unit_settings),
+                'deduplicator': deepcopy(self.deduplicator),
             }
             self._history.append(snapshot)
             if len(self._history) > self._max_history:
@@ -275,14 +426,23 @@ class DiptoxPipeline:
         df_before_undo = self.df.copy() if self.df is not None else None
         snapshot = self._history.pop()
         self.df = snapshot['df']
+        self.excluded_df = snapshot.get('excluded_df', pd.DataFrame()).copy()
         self.smiles_col = snapshot['smiles_col']
         self.cas_col = snapshot['cas_col']
         self.name_col = snapshot['name_col']
         self.target_col = snapshot['target_col']
         self.unit_col = snapshot['unit_col']
         self.id_col = snapshot['id_col']
+        self.inchikey_col = snapshot.get('inchikey_col')
         self._preprocess_key = snapshot['_preprocess_key']
         self._units_standardized = snapshot['_units_standardized']
+        self._structure_derived_columns = snapshot.get('_structure_derived_columns', set())
+        self._source_index_labels = snapshot.get('_source_index_labels', {}).copy()
+        self._row_lineage = snapshot.get('_row_lineage', {}).copy()
+        self.source_columns = snapshot.get('source_columns', self.source_columns).copy()
+        self._input_column_aliases = snapshot.get('_input_column_aliases', {}).copy()
+        self._dedup_unit_settings = deepcopy(snapshot.get('_dedup_unit_settings'))
+        self.deduplicator = deepcopy(snapshot.get('deduplicator', self.deduplicator))
 
         self._record_step("Undo", df_before_undo, self.df, "Restored to previous state")
         return True
@@ -322,13 +482,31 @@ class DiptoxPipeline:
 
         user_specified_smiles = smiles_col
         df = self.data_handler.load_data(input_data=input_data, smiles_col=smiles_col, cas_col=cas_col,
+                                         name_col=name_col,
                                          target_col=target_col, unit_col=unit_col, inchikey_col=inchikey_col,
-                                         id_col=id_col, **kwargs)
+                                         id_col=id_col, interactive=self.interactive, **kwargs)
 
+        self.source_columns = list(df.columns)
+        self._source_index_labels = dict(enumerate(df.index.tolist()))
+        df.index = pd.RangeIndex(len(df))
+        self._row_lineage = {index: (index,) for index in df.index}
+        initial_renames = source_column_renames(df.columns, self.source_columns, INITIAL_COLUMNS)
+        df.rename(columns=initial_renames, inplace=True)
+        self.source_columns = [initial_renames.get(column, column) for column in self.source_columns]
+        self._input_column_aliases = dict(initial_renames)
+        user_specified_smiles = initial_renames.get(user_specified_smiles, user_specified_smiles)
+        cas_col = initial_renames.get(cas_col, cas_col)
+        name_col = initial_renames.get(name_col, name_col)
+        target_col = initial_renames.get(target_col, target_col)
+        unit_col = initial_renames.get(unit_col, unit_col)
+        inchikey_col = initial_renames.get(inchikey_col, inchikey_col)
+        id_col = initial_renames.get(id_col, id_col)
         if 'Canonical SMILES' not in df.columns:
             df['Canonical SMILES'] = pd.Series(pd.NA, index=df.index, dtype="string")
         if 'Processing Log' not in df.columns:
             df['Processing Log'] = pd.Series(pd.NA, index=df.index, dtype="string")
+        if 'Standardization Status' not in df.columns:
+            df['Standardization Status'] = pd.Series(pd.NA, index=df.index, dtype="string")
         if 'Is Valid' not in df.columns:
             df['Is Valid'] = pd.Series(False, index=df.index, dtype="boolean")
 
@@ -341,11 +519,16 @@ class DiptoxPipeline:
         except Exception:
             df['Processing Log'] = pd.Series(pd.NA, index=df.index, dtype="string")
         try:
+            df['Standardization Status'] = df['Standardization Status'].astype("string")
+        except Exception:
+            df['Standardization Status'] = pd.Series(pd.NA, index=df.index, dtype="string")
+        try:
             df['Is Valid'] = df['Is Valid'].astype("boolean")
         except Exception:
             df['Is Valid'] = pd.Series(False, index=df.index, dtype="boolean")
 
         self.df = df
+        self.excluded_df = pd.DataFrame()
         if user_specified_smiles:
             self.smiles_col = user_specified_smiles
         else:
@@ -363,14 +546,98 @@ class DiptoxPipeline:
         self._preprocess_key = 0
         self._units_standardized = False
         self._dedup_unit_settings = None
+        self.deduplicator = None
+        self._current_dedup_config = None
+        self._structure_derived_columns = set()
 
         if hasattr(self, '_history'):
             self._history.clear()
         else:
             self._history = []
+        self._audit_log = []
 
         source_name = input_data if isinstance(input_data, str) else "Memory/List"
         self._record_step("Data Loading", None, self.df, f"Source: {source_name}")
+        if 'Structure Reliability' in self.df:
+            unreliable = self.df['Structure Reliability'].eq('Unreliable').fillna(False)
+            if unreliable.any():
+                excluded = self.df.loc[unreliable].copy()
+                excluded['Is Valid'] = False
+                excluded['Standardization Status'] = 'Unreliable structure'
+                reasons = excluded.get('Import Error', pd.Series(pd.NA, index=excluded.index))
+                excluded['Processing Log'] = reasons.fillna('SDF structure and declared SMILES disagree')
+                excluded['Exclusion Reason'] = excluded['Processing Log']
+                excluded['Excluded At'] = 'Input validation'
+                excluded['Source DataFrame Index'] = self._source_labels(excluded.index)
+                self._merge_excluded_records(excluded)
+                df_before = self.df
+                self.df = self.df.loc[~unreliable].copy()
+                self._record_step(
+                    'Input validation', df_before, self.df,
+                    f'Excluded {len(excluded)} unreliable SDF structure record(s)',
+                )
+
+    def _source_labels(self, indices) -> List[Any]:
+        """Translate private row identities to the original input index labels."""
+        return [self._source_index_labels.get(index, index) for index in indices]
+
+    def _protect_source_columns(self, output_columns):
+        """Keep imported values and update mappings before writing derived fields."""
+        renamed = source_column_renames(self.df.columns, self.source_columns, output_columns)
+        if not renamed:
+            return {}
+        self.df.rename(columns=renamed, inplace=True)
+        if not self.excluded_df.empty:
+            self.excluded_df.rename(columns=renamed, inplace=True)
+        self.source_columns = [renamed.get(column, column) for column in self.source_columns]
+        self._input_column_aliases = {
+            key: renamed.get(value, value) for key, value in self._input_column_aliases.items()
+        }
+        self._input_column_aliases.update(renamed)
+        for role in ('smiles_col', 'target_col', 'unit_col', 'cas_col', 'name_col', 'id_col', 'inchikey_col'):
+            setattr(self, role, renamed.get(getattr(self, role), getattr(self, role)))
+        if self.deduplicator:
+            self.deduplicator.condition_cols = [
+                renamed.get(column, column) for column in self.deduplicator.condition_cols
+            ]
+        return renamed
+
+    def _invalidate_standardized_mw_targets(self):
+        """Clear derived values whose MW basis no longer matches the current structure."""
+        dependencies = self.df.attrs.get('_diptox_standardized_mw_dependencies', {})
+        stale_targets = set(self.df.attrs.get('_diptox_stale_targets', []))
+        for column, weights in dependencies.items():
+            if column not in self.df:
+                continue
+            stale = [index for index in self.df.index if index in weights and (
+                pd.isna(self.df.at[index, 'Standardized Molecular Weight'])
+                or abs(float(self.df.at[index, 'Standardized Molecular Weight']) - weights[index]) > 1e-6
+            )]
+            if stale:
+                self.df.loc[stale, column] = pd.NA
+                stale_targets.add(column)
+                if column == self.target_col:
+                    self.df.loc[stale, 'Unit Conversion Status'] = 'Stale standardized molecular weight'
+                    self._units_standardized = False
+        self.df.attrs['_diptox_stale_targets'] = sorted(stale_targets)
+
+    def _restore_target_scale_from_units(self):
+        """Recover an exported logarithmic target's scale without extra user mapping."""
+        if not self.target_col or not self.unit_col or self.unit_col not in self.df:
+            return
+        if self.target_col in self.df.attrs.get(TARGET_SCALES_ATTR, {}):
+            return
+        units = self.df[self.unit_col].dropna().astype(str)
+        scales = set()
+        for unit in units:
+            match = re.fullmatch(r'(-?log10)\(.*\)', unit)
+            scales.add(match.group(1) if match else 'linear')
+        if len(scales) > 1 and scales != {'linear'}:
+            raise ValueError("The target mixes linear and logarithmic scales; use values on one scale.")
+        if scales and scales != {'linear'}:
+            metadata = dict(self.df.attrs.get(TARGET_SCALES_ATTR, {}))
+            metadata[self.target_col] = next(iter(scales))
+            self.df.attrs[TARGET_SCALES_ATTR] = metadata
 
     def _ensure_dtypes_after_load(self) -> None:
         """
@@ -378,7 +645,7 @@ class DiptoxPipeline:
         FutureWarning when assigning incompatible values.
         """
         # string columns
-        for col in ["Canonical SMILES", "Processing Log"]:
+        for col in ["Canonical SMILES", "Processing Log", "Standardization Status"]:
             if col not in self.df.columns:
                 self.df[col] = pd.Series(pd.NA, index=self.df.index, dtype="string")
             else:
@@ -403,38 +670,49 @@ class DiptoxPipeline:
     @check_data_loaded
     def preprocess(self, remove_salts: bool = True,
                    remove_solvents: bool = True,
-                   remove_mixtures: bool = False,
+                   remove_mixtures: bool = True,
                    remove_inorganic: bool = True,
+                   reject_metal_species: bool = False,
+                   element_policy: Optional[str] = None,
                    neutralize: bool = True,
                    reject_non_neutral: bool = False,
                    check_valid_atoms: bool = False,
-                   strict_atom_check: bool = False,
                    remove_stereo: bool = False,
                    remove_isotopes: bool = True,
                    remove_hs: bool = True,
-                   keep_largest_fragment: bool = True,
+                   keep_largest_fragment: bool = False,
+                   mixture_mode: Optional[str] = None,
                    hac_threshold: int = 3,
                    sanitize: bool = True,
                    reject_radical_species: bool = True,
                    progress_callback: Optional[Callable[[int, int], None]] = None,
                    n_jobs: int = 1,
-                   chunksize: int = 100) -> pd.DataFrame:
+                   chunksize: int = 100,
+                   add_hs: bool = False) -> pd.DataFrame:
         """
         Execute the chemical processing pipeline.\
         :param remove_salts: Whether to remove salts.
         :param remove_solvents: Whether to remove solvent molecules.
-        :param remove_mixtures: Whether to remove mixtures.
-        :param remove_inorganic: Whether to remove inorganic molecules.
+        :param remove_mixtures: Legacy switch. False preserves mixtures; True uses reject/largest behavior.
+        :param remove_inorganic: Whether to reject carbon-free and selected small inorganic structures.
+        :param reject_metal_species: Whether to reject structures containing metal atoms.
+        :param element_policy: Explicit mutually exclusive element policy: 'allow_all',
+                               'reject_metals', or 'allowed_atoms'. When supplied, it takes
+                               precedence over reject_metal_species and check_valid_atoms.
+                               'allowed_atoms' rejects the whole molecule if any element is unlisted.
         :param neutralize: Whether to neutralize charges.
         :param reject_non_neutral: Only retain the molecules whose formal charge is zero.
-        :param check_valid_atoms: Whether to check for valid atoms.
-        :param strict_atom_check: If True, remove the entire molecule if invalid atoms are found.
-                                  If False, attempt to remove only the invalid atoms if they are not on the main chain.
+        :param check_valid_atoms: Reject the whole molecule if any element is outside the allowed list.
         :param remove_stereo: Whether to remove stereochemistry.
         :param remove_isotopes: Whether to remove isotope information. Defaults to True.
         :param remove_hs: Whether to remove hydrogen atoms.
-        :param keep_largest_fragment: Whether to keep the largest fragment.
-        :param hac_threshold: Threshold for salt removal (heavy atoms count).
+        :param add_hs: Add explicit hydrogen atoms after all chemical processing.
+                       If remove_hs is also True, remove first and add last.
+        :param keep_largest_fragment: Explicitly extract the largest substantial fragment instead of rejecting a mixture.
+        :param mixture_mode: Explicit mixture policy: 'keep', 'reject', or 'largest'. When supplied,
+                             it takes precedence over remove_mixtures and keep_largest_fragment.
+                             All-identical repeated components collapse before any mixture policy.
+        :param hac_threshold: Minimum heavy-atom threshold used only when extracting the largest fragment.
         :param sanitize: Whether to perform chemical sanitization.
         :param reject_radical_species: Molecules containing free radical atoms are directly rejected.
         :param progress_callback: Optional callback function for progressing.
@@ -447,11 +725,50 @@ class DiptoxPipeline:
         """
         if platform.system() == "Windows" and mp.current_process().name != 'MainProcess':
             msg = f"[WARNING] Process {os.getpid()} ignores 'preprocess' to prevent crash. Please use 'if __name__ == \"__main__\":' to fix memory issues."
-            print(msg, flush=True)
+            print(msg, file=sys.stderr, flush=True)
             return self.df
 
-        self._ensure_dtypes_after_load()
+        mixture_aliases = {"preserve": "keep", "remove": "reject"}
+        if mixture_mode is None:
+            resolved_mixture_mode = (
+                "keep" if not remove_mixtures
+                else ("largest" if keep_largest_fragment else "reject")
+            )
+        else:
+            resolved_mixture_mode = mixture_aliases.get(
+                str(mixture_mode).strip().lower(),
+                str(mixture_mode).strip().lower(),
+            )
+        if resolved_mixture_mode not in {"keep", "reject", "largest"}:
+            raise ValueError("mixture_mode must be 'keep', 'reject', or 'largest'.")
+
+        element_aliases = {
+            "allow": "allow_all",
+            "all": "allow_all",
+            "metals": "reject_metals",
+            "whitelist": "allowed_atoms",
+        }
+        if element_policy is None:
+            resolved_element_policy = (
+                "allowed_atoms" if check_valid_atoms
+                else ("reject_metals" if reject_metal_species else "allow_all")
+            )
+        else:
+            normalized_element_policy = str(element_policy).strip().lower()
+            resolved_element_policy = element_aliases.get(
+                normalized_element_policy,
+                normalized_element_policy,
+            )
+        if resolved_element_policy not in {"allow_all", "reject_metals", "allowed_atoms"}:
+            raise ValueError(
+                "element_policy must be 'allow_all', 'reject_metals', or 'allowed_atoms'."
+            )
+        resolved_reject_metals = resolved_element_policy == "reject_metals"
+        resolved_check_atoms = resolved_element_policy == "allowed_atoms"
+
         self._save_checkpoint()
+        self._protect_source_columns(PREPROCESS_COLUMNS)
+        self._ensure_dtypes_after_load()
         df_start = self.df.copy()
 
         # Capture configuration for the worker
@@ -459,14 +776,16 @@ class DiptoxPipeline:
             'remove_salts': remove_salts,
             'remove_solvents': remove_solvents,
             'remove_mixtures': remove_mixtures,
+            'mixture_mode': resolved_mixture_mode,
             'remove_inorganic': remove_inorganic,
+            'reject_metal_species': resolved_reject_metals,
             'neutralize': neutralize,
             'reject_non_neutral': reject_non_neutral,
-            'check_valid_atoms': check_valid_atoms,
-            'strict_atom_check': strict_atom_check,
+            'check_valid_atoms': resolved_check_atoms,
             'remove_stereo': remove_stereo,
             'remove_isotopes': remove_isotopes,
             'remove_hs': remove_hs,
+            'add_hs': add_hs,
             'keep_largest_fragment': keep_largest_fragment,
             'hac_threshold': hac_threshold,
             'sanitize': sanitize,
@@ -519,7 +838,8 @@ class DiptoxPipeline:
                         chunksize=chunksize
                     )
 
-                    for i, result in tqdm(enumerate(iterator), total=total_rows, desc=f"Processing (MP={n_workers})"):
+                    for i, result in tqdm(enumerate(iterator), total=total_rows, desc=f"Processing (MP={n_workers})",
+                                          disable=not self.interactive or bool(progress_callback)):
                         results.append(result)
                         if progress_callback and i % chunksize == 0:
                             progress_callback(i + 1, total_rows)
@@ -532,7 +852,8 @@ class DiptoxPipeline:
                             "Multiprocessing failed (likely due to missing main guard). Switching to sequential mode.")
                         if not is_gui_mode:
                             print(
-                                "\n[System] Multiprocessing failed. Auto-fallback to sequential execution (n_jobs=1).\n")
+                                "\n[System] Multiprocessing failed. Auto-fallback to sequential execution (n_jobs=1).\n",
+                                file=sys.stderr)
                     else:
                         logger.error(f"Multiprocessing error: {e}")
                 results = []
@@ -553,39 +874,173 @@ class DiptoxPipeline:
             else:
                 logger.info("Running in sequential mode...")
 
-            for i, s in tqdm(enumerate(smiles_list), total=total_rows, desc="Processing"):
+            for i, s in tqdm(enumerate(smiles_list), total=total_rows, desc="Processing",
+                             disable=not self.interactive or bool(progress_callback)):
                 result = _worker_preprocess((s, self.chem_processor, config))
                 results.append(result)
                 if progress_callback and i % 10 == 0:
                     progress_callback(i + 1, total_rows)
 
+        # Keep malformed SDF records distinguishable from ordinary missing input.
+        if 'Import Error' in self.df.columns:
+            for index, import_error in enumerate(self.df['Import Error']):
+                if pd.notna(import_error) and str(import_error).strip() and not results[index][0]:
+                    results[index] = (False, f'Invalid SMILES: {import_error}', None)
+
         # Update DataFrame
         is_valid_list = [r[0] for r in results]
         logs_list = [r[1] for r in results]
         canon_smiles_list = [r[2] for r in results]
+        status_list = [_standardization_status(r[0], r[1]) for r in results]
+        original_metadata = [_molecule_metadata(smiles, sanitize=sanitize) for smiles in smiles_list]
+        final_metadata = [_molecule_metadata(smiles) for smiles in canon_smiles_list]
 
         self.df['Is Valid'] = pd.Series(is_valid_list, index=self.df.index, dtype="boolean")
         self.df['Processing Log'] = pd.Series(logs_list, index=self.df.index, dtype="string")
         self.df['Canonical SMILES'] = pd.Series(canon_smiles_list, index=self.df.index, dtype="string")
+        for column in self._structure_derived_columns:
+            if column in self.df.columns:
+                dtype = 'boolean' if column.startswith('Substructure_') else 'string'
+                self.df[column] = pd.Series(pd.NA, index=self.df.index, dtype=dtype)
+        self.df['Standardization Status'] = pd.Series(status_list, index=self.df.index, dtype="string")
+        self.df['Original Canonical SMILES'] = pd.Series(
+            [item.get('smiles') for item in original_metadata], index=self.df.index, dtype="string"
+        )
+        self.df['Original Fragment Count'] = pd.Series(
+            [item.get('fragments') for item in original_metadata], index=self.df.index, dtype="Int64"
+        )
+        self.df['Final Fragment Count'] = pd.Series(
+            [item.get('fragments') for item in final_metadata], index=self.df.index, dtype="Int64"
+        )
+        self.df['Original Structure Type'] = pd.Series(
+            [
+                "Multi-component" if item.get('fragments', 0) > 1 else "Single-component"
+                if item else pd.NA
+                for item in original_metadata
+            ],
+            index=self.df.index,
+            dtype="string",
+        )
+        self.df['Final Structure Type'] = pd.Series(
+            [
+                "Multi-component" if item.get('fragments', 0) > 1 else "Single-component"
+                if item else pd.NA
+                for item in final_metadata
+            ],
+            index=self.df.index,
+            dtype="string",
+        )
+        self.df['Is Multi-Component'] = pd.Series(
+            [item.get('fragments', 0) > 1 if item else pd.NA for item in final_metadata],
+            index=self.df.index,
+            dtype="boolean",
+        )
+        self.df['Original Formal Charge'] = pd.Series(
+            [item.get('charge') for item in original_metadata], index=self.df.index, dtype="Int64"
+        )
+        self.df['Final Formal Charge'] = pd.Series(
+            [item.get('charge') for item in final_metadata], index=self.df.index, dtype="Int64"
+        )
+        self.df['Original Contains Metal'] = pd.Series(
+            [bool(item.get('metals')) if item else pd.NA for item in original_metadata],
+            index=self.df.index,
+            dtype="boolean",
+        )
+        self.df['Final Contains Metal'] = pd.Series(
+            [bool(item.get('metals')) if item else pd.NA for item in final_metadata],
+            index=self.df.index,
+            dtype="boolean",
+        )
+        self.df['Original Metal Elements'] = pd.Series(
+            [",".join(item.get('metals', [])) if item else pd.NA for item in original_metadata],
+            index=self.df.index,
+            dtype="string",
+        )
+        self.df['Final Metal Elements'] = pd.Series(
+            [",".join(item.get('metals', [])) if item else pd.NA for item in final_metadata],
+            index=self.df.index,
+            dtype="string",
+        )
+        self.df['Original Molecular Weight'] = pd.Series(
+            [item.get('mw') for item in original_metadata], index=self.df.index, dtype="Float64"
+        )
+        self.df['Standardized Molecular Weight'] = pd.Series(
+            [item.get('mw') for item in final_metadata], index=self.df.index, dtype="Float64"
+        )
+        self._invalidate_standardized_mw_targets()
+
+        # Keep mapped source strings for provenance, but compare chemical
+        # identities without atom-map annotations.
+        original_identities = pd.Series(
+            [item.get('identity') for item in original_metadata], index=self.df.index, dtype='string'
+        )
+        final_identities = pd.Series(
+            [item.get('identity') for item in final_metadata], index=self.df.index, dtype='string'
+        )
+        self.df['Structure Changed'] = pd.Series(
+            original_identities.ne(final_identities),
+            index=self.df.index,
+            dtype="boolean"
+        )
+        mw_delta = (self.df['Original Molecular Weight'] - self.df['Standardized Molecular Weight']).abs()
+        self.df['Molecular Weight Changed'] = pd.Series(
+            mw_delta.gt(1e-6), index=self.df.index, dtype="boolean"
+        )
+
+        self.df['Parent Mapping Count'] = pd.Series(pd.NA, index=self.df.index, dtype="Int64")
+        self.df['Parent Mapping Conflict'] = pd.Series(pd.NA, index=self.df.index, dtype="boolean")
+        self.df['Parent Source Structures'] = pd.Series(pd.NA, index=self.df.index, dtype="string")
+        self.df['Parent Mapping Status'] = pd.Series("Excluded", index=self.df.index, dtype="string")
+        valid_rows = self.df['Is Valid'].fillna(False) & self.df['Canonical SMILES'].notna()
+        for _, group in self.df.loc[valid_rows].groupby('Canonical SMILES', sort=False):
+            sources = list(dict.fromkeys(original_identities.loc[group.index].dropna().astype(str)))
+            count = len(sources)
+            indices = group.index
+            self.df.loc[indices, 'Parent Mapping Count'] = count
+            self.df.loc[indices, 'Parent Mapping Conflict'] = count > 1
+            self.df.loc[indices, 'Parent Source Structures'] = " | ".join(sources)
+            changed = bool(group['Structure Changed'].fillna(False).any())
+            mapping_status = "Many-to-one" if count > 1 else ("Transformed" if changed else "Unchanged")
+            self.df.loc[indices, 'Parent Mapping Status'] = mapping_status
 
         if progress_callback:
             progress_callback(total_rows, total_rows)
         self._preprocess_key = 1
+
+        # Keep invalid rows in the working frame for inspection/reprocessing, and
+        # expose an audit copy immediately instead of waiting for deduplication.
+        excluded = self.df.loc[~self.df['Is Valid'].fillna(False)].copy()
+        excluded['Source DataFrame Index'] = self._source_labels(excluded.index)
+        excluded['Exclusion Reason'] = (
+            excluded['Standardization Status'].fillna('Invalid').astype(str)
+            + ': ' + excluded['Processing Log'].fillna('').astype(str)
+        )
+        excluded['Excluded At'] = 'Preprocessing'
+        self._merge_excluded_records(excluded, refresh_frame=self.df, refresh_stage='Preprocessing')
 
         valid_count = self.df['Is Valid'].sum()
         invalid_count = total_rows - valid_count
 
         mode_str = "Multiprocessing" if (n_workers > 1 and not run_sequentially) else "Sequential"
         active_rules = []
+        active_rules.append("Rej_Dummy_Atoms")
         if remove_salts: active_rules.append("Rm_Salts")
         if remove_solvents: active_rules.append("Rm_Solvents")
-        if remove_mixtures: active_rules.append(f"Rm_Mixtures(HAC>={hac_threshold})")
+        mixture_rule = (
+            f"Largest(HAC>{hac_threshold})"
+            if resolved_mixture_mode == "largest"
+            else resolved_mixture_mode.capitalize()
+        )
+        active_rules.append(f"Mixtures({mixture_rule})")
+        if resolved_reject_metals: active_rules.append("Element_Policy(Reject_Metals)")
         if remove_inorganic: active_rules.append("Rm_Inorg")
         if neutralize: active_rules.append(f"Neutralize(Strict={reject_non_neutral})")
-        if check_valid_atoms: active_rules.append(f"Atom_Check(Strict={strict_atom_check})")
+        if resolved_check_atoms: active_rules.append("Element_Policy(Allowed_Atoms)")
+        if resolved_element_policy == "allow_all": active_rules.append("Element_Policy(Allow_All)")
         if remove_stereo: active_rules.append("Rm_Stereo")
         if remove_isotopes: active_rules.append("Rm_Iso")
         if remove_hs: active_rules.append("Rm_Hs")
+        if add_hs: active_rules.append("Add_Hs")
         if sanitize: active_rules.append("Sanitize")
         if reject_radical_species: active_rules.append("Rej_Radicals")
 
@@ -594,6 +1049,23 @@ class DiptoxPipeline:
         details = f"Valid: {valid_count} | Invalid: {invalid_count} | Rules: [{rules_str}] | Mode: {mode_str}"
         self._record_step("Preprocessing", df_start, self.df, details)
         return self.df
+
+    def _merge_excluded_records(self, excluded: pd.DataFrame,
+                               refresh_frame: Optional[pd.DataFrame] = None,
+                               refresh_stage: Optional[str] = None) -> None:
+        """Refresh by private row identity, even for identical rows or duplicate labels."""
+        previous = self.excluded_df
+        if not previous.empty and refresh_frame is not None and not refresh_frame.empty:
+            replaced = previous.index.isin(refresh_frame.index)
+            if refresh_stage is not None and 'Excluded At' in previous:
+                replaced &= previous['Excluded At'].eq(refresh_stage).fillna(False).to_numpy(dtype=bool)
+            previous = previous.loc[~replaced]
+        if previous.empty:
+            self.excluded_df = excluded.copy()
+        elif excluded.empty:
+            self.excluded_df = previous.copy()
+        else:
+            self.excluded_df = pd.concat([previous, excluded])
 
     def _update_row(self, idx, is_valid: bool, comment: str, smiles: Optional[str]) -> None:
         """Update the result row for a given index."""
@@ -604,65 +1076,206 @@ class DiptoxPipeline:
     @_run_on_main_process_only
     @check_data_loaded
     def standardize_units(self, standard_unit: Optional[str] = None,
-                          conversion_rules: Optional[Dict[Tuple[str, str], str]] = None) -> None:
+                          conversion_rules: Optional[Dict[Tuple[str, str], str]] = None,
+                          molecular_weight_source: Optional[str] = None,
+                          molecular_weight_col: Optional[str] = None) -> None:
         """
         Orchestrates the standardization of units for the target column.
         :param standard_unit: The target unit to convert all values to.
         :param conversion_rules: A dictionary of conversion rules, e.g., {('mg/L', 'ug/L'): 'x * 1000'}.
+        :param molecular_weight_source: Explicit molecular-weight basis for mass/molar conversion:
+                                        'original' or 'standardized'. Required when a conversion
+                                        uses MW, unless molecular_weight_col is provided.
+        :param molecular_weight_col: Optional dataset column containing the reported molecular weight.
+                                     When provided, it overrides molecular_weight_source.
         """
-        self._save_checkpoint()
         df_start = self.df.copy()
+        if molecular_weight_source not in {None, "original", "standardized"}:
+            raise ValueError(
+                "molecular_weight_source must be 'original' or 'standardized'; "
+                "'auto' is no longer supported. Choose an explicit molecular-weight basis "
+                "or provide molecular_weight_col."
+            )
+        if molecular_weight_source == "standardized" and not self._preprocess_key:
+            raise ValueError(
+                "molecular_weight_source='standardized' requires preprocessing first."
+            )
         if not self.target_col or not self.unit_col:
+            if not self.interactive:
+                raise ValueError("Unit standardization requires both target_col and unit_col.")
             logger.info("Target column or unit column not specified, skipping unit standardization.")
             self._units_standardized = True
             return
 
-        unique_units = [u for u in self.df[self.unit_col].dropna().unique() if u]
-        current_unit = unique_units[0] if unique_units else None
-        if len(unique_units) <= 1 and (not standard_unit or current_unit == standard_unit):
-            logger.info("Only one unit detected and it matches standard. No conversion necessary.")
-            # Ensure a consistent '_new' column is created for the next step
-            new_target_col = f"{self.target_col} (Standardized)"
-            new_unit_col = f"{self.unit_col} (Standardized)"
-            self.df[new_target_col] = self.df[self.target_col]
-            self.df[new_unit_col] = self.df[self.unit_col]
-            self.target_col = new_target_col
-            self.unit_col = new_unit_col
-            self._units_standardized = True
-            return
+        self._restore_target_scale_from_units()
+        if get_target_scale(self.df, self.target_col) != 'linear':
+            raise ValueError("Cannot convert a logarithmic target as a linear concentration. Undo the log transformation first.")
+        molecular_weight_col = self._input_column_aliases.get(molecular_weight_col, molecular_weight_col)
 
-        final_standard_unit = standard_unit
+        # Recompute from the last conversion's source columns on retry. DataFrame
+        # attrs travel with checkpoints, so undo restores this mapping as well.
+        source_target_col, source_unit_col = self.target_col, self.unit_col
+        previous_conversion = self.df.attrs.get('_diptox_unit_conversion', {})
+        conversions = self.df.attrs.get('_diptox_unit_conversions', {})
+        if (
+            previous_conversion.get('output_target') == self.target_col
+            and previous_conversion.get('output_unit') == self.unit_col
+            and previous_conversion.get('input_target') in self.df.columns
+            and previous_conversion.get('input_unit') in self.df.columns
+            and (standard_unit is None or standard_unit == previous_conversion.get('standard_unit'))
+        ):
+            source_target_col = previous_conversion['input_target']
+            source_unit_col = previous_conversion['input_unit']
+            if standard_unit is None:
+                standard_unit = previous_conversion.get('standard_unit')
+
+        # A repeated request for the current unit can change the MW basis even
+        # after intermediate unit scaling. Find the actual MW conversion's input.
+        requested_basis = f'column:{molecular_weight_col}' if molecular_weight_col else molecular_weight_source
+        current_units = self.df[self.unit_col].dropna().unique()
+        same_unit_request = len(current_units) == 1 and (standard_unit is None or standard_unit == current_units[0])
+        if requested_basis and same_unit_request:
+            cursor, visited = self.target_col, set()
+            while cursor in conversions and cursor not in visited:
+                visited.add(cursor)
+                conversion = conversions[cursor]
+                if conversion.get('requires_mw'):
+                    if (requested_basis != conversion.get('mw_basis')
+                            or self.target_col in self.df.attrs.get('_diptox_stale_targets', [])):
+                        source_target_col = conversion['input_target']
+                        source_unit_col = conversion['input_unit']
+                    break
+                cursor = conversion['input_target']
+            else:
+                prior_basis = self.df.attrs.get('_diptox_target_mw_bases', {}).get(self.target_col)
+                if prior_basis and prior_basis != requested_basis:
+                    raise ValueError("Changing the molecular-weight basis after aggregation requires restoring the original concentrations first.")
+
+        if source_target_col in self.df.attrs.get('_diptox_stale_targets', []):
+            raise ValueError("The target depends on an outdated standardized molecular weight. Restore the original concentrations before converting again.")
+
+        unique_units = [u for u in self.df[source_unit_col].dropna().unique() if u]
+        current_unit = unique_units[0] if unique_units else None
+        final_standard_unit = standard_unit or (current_unit if len(unique_units) <= 1 else None)
         is_gui_mode = os.environ.get("DIPTOX_GUI_MODE") == "true"
 
         if not final_standard_unit:
-            if is_gui_mode:
-                raise ValueError("A standard unit must be provided when multiple units exist.")
+            if not self.interactive or is_gui_mode:
+                raise ValueError(
+                    "A standard_unit must be provided when source units are missing or multiple units exist. "
+                    f"Available source units: {unique_units}"
+                )
             final_standard_unit = self._select_standard_unit_interactively(unique_units)
             if not final_standard_unit:
                 return
 
         unit_processor = UnitProcessor(rules=conversion_rules)
 
+        if not self.interactive:
+            missing_rules = [
+                (unit, final_standard_unit) for unit in unique_units
+                if unit != final_standard_unit and not unit_processor.get_rule(unit, final_standard_unit)
+            ]
+            if missing_rules:
+                pairs = ", ".join(f"{source!r} -> {target!r}" for source, target in missing_rules)
+                raise ValueError(
+                    f"Missing conversion rules: {pairs}. Provide conversion_rules with a formula for each pair."
+                )
+
         rule_provider = None
-        if not is_gui_mode:
+        if self.interactive and not is_gui_mode:
             prompt_tracker = {'first_time': True}
             rule_provider = lambda from_unit, to_unit: self._get_rule_from_user(from_unit, to_unit, prompt_tracker)
 
-        smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
+        smiles_col = 'Canonical SMILES' if molecular_weight_source == "standardized" else None
+        mw_col = molecular_weight_col
+        if not mw_col and molecular_weight_source == "original":
+            if self._preprocess_key and 'Original Molecular Weight' in self.df.columns:
+                mw_col = 'Original Molecular Weight'
+            else:
+                smiles_col = self.smiles_col
 
+        requires_mw = any(
+            unit != final_standard_unit
+            and 'mw' in (unit_processor.get_rule(unit, final_standard_unit) or '')
+            for unit in unique_units
+        )
+        if requires_mw and not mw_col and molecular_weight_source is None:
+            raise ValueError(
+                "This conversion requires an explicit molecular-weight basis. Set "
+                "molecular_weight_source='original' or 'standardized', "
+                "or provide molecular_weight_col."
+            )
+
+        self._save_checkpoint()
+        while True:
+            renamed = self._protect_source_columns({
+                source_target_col + ' (Standardized)', source_unit_col + ' (Standardized)',
+                'Unit Conversion Status', 'Molecular Weight Used', 'Molecular Weight Source',
+            })
+            if not renamed:
+                break
+            source_target_col = renamed.get(source_target_col, source_target_col)
+            source_unit_col = renamed.get(source_unit_col, source_unit_col)
+            if mw_col:
+                mw_col = renamed.get(mw_col, mw_col)
+            if smiles_col:
+                smiles_col = renamed.get(smiles_col, smiles_col)
+        if molecular_weight_col:
+            requested_basis = f'column:{mw_col}'
         try:
-            self.df, new_target_col, new_unit_col = unit_processor.standardize(
+            converted_df, new_target_col, new_unit_col = unit_processor.standardize(
                 df=self.df,
-                target_col=self.target_col,
-                unit_col=self.unit_col,
+                target_col=source_target_col,
+                unit_col=source_unit_col,
                 standard_unit=final_standard_unit,
                 smiles_col=smiles_col,
+                molecular_weight_col=mw_col,
                 rule_provider_callback=rule_provider
             )
+            converted_df.attrs['_diptox_unit_conversion'] = {
+                'input_target': source_target_col,
+                'input_unit': source_unit_col,
+                'output_target': new_target_col,
+                'output_unit': new_unit_col,
+                'standard_unit': final_standard_unit,
+                'requires_mw': requires_mw,
+                'mw_basis': requested_basis,
+            }
+            conversion_history = deepcopy(self.df.attrs.get('_diptox_unit_conversions', {}))
+            conversion_history[new_target_col] = dict(converted_df.attrs['_diptox_unit_conversion'])
+            converted_df.attrs['_diptox_unit_conversions'] = conversion_history
+            bases = dict(self.df.attrs.get('_diptox_target_mw_bases', {}))
+            basis = requested_basis if requires_mw else bases.get(source_target_col)
+            if basis:
+                bases[new_target_col] = basis
+            converted_df.attrs['_diptox_target_mw_bases'] = bases
+            dependencies = deepcopy(self.df.attrs.get('_diptox_standardized_mw_dependencies', {}))
+            inherited = dict(dependencies.get(source_target_col, {}))
+            if requires_mw and ((molecular_weight_source == 'standardized' and not mw_col)
+                                or (mw_col == 'Standardized Molecular Weight' and self._preprocess_key)):
+                for index in converted_df.index:
+                    used = converted_df.at[index, 'Molecular Weight Used']
+                    if pd.notna(used):
+                        inherited[index] = float(used)
+            if inherited:
+                dependencies[new_target_col] = inherited
+            else:
+                dependencies.pop(new_target_col, None)
+            converted_df.attrs['_diptox_standardized_mw_dependencies'] = dependencies
+            converted_df.attrs['_diptox_stale_targets'] = [
+                column for column in self.df.attrs.get('_diptox_stale_targets', [])
+                if column != new_target_col
+            ]
+            self.df = converted_df
             self.target_col = new_target_col
             self.unit_col = new_unit_col
             self._units_standardized = True
-            self._record_step("Unit Standardization", df_start, self.df, f"Target: {final_standard_unit}")
+            mw_basis = f"column:{mw_col}" if mw_col else molecular_weight_source or "not required"
+            self._record_step(
+                "Unit Standardization", df_start, self.df,
+                f"Target: {final_standard_unit} | MW basis: {mw_basis}"
+            )
         except ValueError as e:
             logger.error(f"Unit standardization failed: {e}")
             raise
@@ -719,36 +1332,63 @@ class DiptoxPipeline:
                             custom_method: Optional[Callable] = None,
                             standard_unit: Optional[str] = None,
                             conversion_rules: Optional[Dict[Tuple[str, str], str]] = None,
+                            molecular_weight_source: Optional[str] = None,
+                            molecular_weight_col: Optional[str] = None,
                             log_transform: Union[bool, str] = "None",
-                            dropna_conditions: bool = False) -> None:
+                            dropna_conditions: bool = False,
+                            aggregation: str = "mean") -> None:
         """
         Configure the deduplicator device
-        :param condition_cols: Data condition column (e.g. temperature, pressure, etc.)
+        :param condition_cols: Experimental context columns that define distinct modeling records
+                               (e.g. temperature or species). Do not include removed salt/metal
+                               provenance unless it is also an input feature of the final model.
         :param data_type: data type - discrete/continuous
-        :param method: Existing method of data deduplication (e.g., auto, vote, priority, 3sigma, IQR.)
-        :param priority: List of preferred values for discrete data
+        :param method: Continuous outlier filtering (auto, 3sigma, IQR), or discrete
+                       selection (vote, priority). Groups of <=3 skip built-in filtering.
+        :param aggregation: Continuous aggregation (mean, max, min) after transformation
+                            and filtering. Extrema ties retain the first matching record.
+        :param priority: Ordered preferred values, used only by discrete method='priority'.
+                         Other methods (including vote) ignore it. No match falls back to voting.
         :param p_threshold: Threshold of normal distribution
         :param custom_method: Custom method of data deduplication
         :param standard_unit: The target unit to standardize to before deduplication.
         :param conversion_rules: A dictionary of rules for unit conversion.
+        :param molecular_weight_source: Molecular-weight basis used by an implicit unit conversion.
+        :param molecular_weight_col: Optional explicit molecular-weight column.
         :param log_transform: If True, applies a -log10 transformation to the target column.
         :param dropna_conditions: If True, drops rows with missing condition values. If False, groups them.
         """
-        if standard_unit or conversion_rules:
-            self._dedup_unit_settings = {'standard_unit': standard_unit, 'conversion_rules': conversion_rules}
+        if molecular_weight_source not in {None, "original", "standardized"}:
+            raise ValueError(
+                "molecular_weight_source must be 'original' or 'standardized'; "
+                "'auto' is no longer supported."
+            )
+        self._dedup_unit_settings = (
+            {
+                'standard_unit': standard_unit,
+                'conversion_rules': conversion_rules,
+                'molecular_weight_source': molecular_weight_source,
+                'molecular_weight_col': molecular_weight_col,
+            }
+            if standard_unit or conversion_rules else None
+        )
+        if condition_cols:
+            condition_cols = [self._input_column_aliases.get(column, column) for column in condition_cols]
 
         smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
 
         self.deduplicator = DataDeduplicator(
             smiles_col=smiles_col, target_col=self.target_col, condition_cols=condition_cols,
             data_type=data_type, method=method, p_threshold=p_threshold, priority=priority,
-            custom_method=custom_method, log_transform=log_transform, dropna_conditions=dropna_conditions
+            custom_method=custom_method, log_transform=log_transform, dropna_conditions=dropna_conditions,
+            aggregation=aggregation
         )
         self._current_dedup_config = {
             'method': method,
+            'aggregation': aggregation,
             'data_type': data_type,
             'condition_cols': condition_cols,
-            'priority': priority,
+            'priority': self.deduplicator.priority_list,
             'log_transform': log_transform,
             'dropna_conditions': dropna_conditions
         }
@@ -759,16 +1399,31 @@ class DiptoxPipeline:
         """Execution deduplicator removal"""
         if not self.deduplicator:
             raise ValueError("Deduplicator not configured. Call config_deduplicator first.")
+        self._restore_target_scale_from_units()
         self._save_checkpoint()
         df_start = self.df.copy()
 
-        if self._dedup_unit_settings and not self._units_standardized:
+        # Resolve the structure key at execution time. This guarantees that a
+        # deduplicator configured before preprocessing still uses the final
+        # representation produced by the user's selected preprocessing policy.
+        dedup_structure_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
+        if not dedup_structure_col or dedup_structure_col not in self.df.columns:
+            raise ValueError("No structure column is available for deduplication.")
+        self.deduplicator.smiles_col = dedup_structure_col
+
+        if self._dedup_unit_settings:
             logger.info("Implicitly running unit standardization as part of deduplication.")
             self.standardize_units(
                 standard_unit=self._dedup_unit_settings.get('standard_unit'),
-                conversion_rules=self._dedup_unit_settings.get('conversion_rules')
+                conversion_rules=self._dedup_unit_settings.get('conversion_rules'),
+                molecular_weight_source=self._dedup_unit_settings.get('molecular_weight_source'),
+                molecular_weight_col=self._dedup_unit_settings.get('molecular_weight_col')
             )
+            self._dedup_unit_settings = None
             df_start = self.df.copy()
+
+        if self.deduplicator.data_type != 'smiles' and self.target_col in self.df.attrs.get('_diptox_stale_targets', []):
+            raise ValueError("The target uses an outdated standardized molecular weight. Reconvert from the original concentrations before deduplication.")
 
         needs_standardization = False
         if self.target_col and self.unit_col and self.unit_col in self.df.columns:
@@ -779,11 +1434,75 @@ class DiptoxPipeline:
             raise ValueError(
                 "Unit standardization is required but has not been performed. Please go to the 'Unit Standardization' step first.")
 
-        self.deduplicator.target_col = self.target_col
+        input_target = self.target_col
+        input_scale = get_target_scale(self.df, input_target)
+        while True:
+            outputs = {'Deduplication Strategy', 'Deduplication Record Count', 'Deduplication Source Rows',
+                       'Deduplication Input Values', 'Deduplication Distinct Value Count', 'Deduplication Value Range'}
+            if self.target_col:
+                outputs.add(self.target_col + '_new')
+            if not self._protect_source_columns(outputs):
+                break
+        input_target = self.target_col
+        self.deduplicator.target_col = input_target
+        dependencies = deepcopy(self.df.attrs.get('_diptox_standardized_mw_dependencies', {}))
 
         self.df = self.deduplicator.deduplicate(self.df, progress_callback=progress_callback)
-        if self.target_col:
+        for index, members in self.deduplicator.source_indices.items():
+            original_members = tuple(dict.fromkeys(
+                source for member in members for source in self._row_lineage.get(member, (member,))
+            ))
+            self._row_lineage[index] = original_members
+            self.df.at[index, 'Deduplication Source Rows'] = ';'.join(
+                str(label) for label in self._source_labels(original_members)
+            )
+            self.df.at[index, 'Deduplication Record Count'] = len(original_members)
+        exclusion_reasons = self.deduplicator.exclusion_reasons
+        excluded_indices = [index for index in df_start.index if index in exclusion_reasons]
+        if excluded_indices:
+            excluded = df_start.loc[excluded_indices].copy()
+            reasons = []
+            for index, row in excluded.iterrows():
+                reason = exclusion_reasons[index]
+                std_status = row.get('Standardization Status')
+                if pd.notna(std_status) and std_status != "Retained":
+                    processing_log = row.get('Processing Log')
+                    reason = str(std_status)
+                    if pd.notna(processing_log) and str(processing_log).strip():
+                        reason += f": {processing_log}"
+                else:
+                    unit_status = row.get('Unit Conversion Status')
+                    successful_unit_statuses = {"Converted", "No conversion needed"}
+                    if pd.notna(unit_status) and unit_status not in successful_unit_statuses:
+                        reason = f"Unit conversion: {unit_status}"
+                reasons.append(reason)
+            excluded['Deduplication Exclusion Reason'] = reasons
+            excluded['Exclusion Reason'] = reasons
+            excluded['Excluded At'] = "Deduplication"
+            excluded['Source DataFrame Index'] = self._source_labels(excluded.index)
+            self._merge_excluded_records(excluded, refresh_frame=excluded)
+        if self.target_col and self.deduplicator.data_type != 'smiles' and self.target_col + '_new' in self.df:
             self.target_col = self.target_col + "_new"
+            input_weights = dependencies.get(input_target, {})
+            propagated = {}
+            for index, members in self.deduplicator.source_indices.items():
+                values = [input_weights[member] for member in members if member in input_weights]
+                if values:
+                    propagated[index] = values[0]
+            if propagated:
+                dependencies[self.target_col] = propagated
+            self.df.attrs['_diptox_standardized_mw_dependencies'] = dependencies
+            bases = dict(self.df.attrs.get('_diptox_target_mw_bases', {}))
+            if input_target in bases:
+                bases[self.target_col] = bases[input_target]
+            self.df.attrs['_diptox_target_mw_bases'] = bases
+            output_scale = get_target_scale(self.df, self.target_col)
+            if output_scale != input_scale and self.unit_col and self.unit_col in self.df:
+                output_unit = self.unit_col + '_new'
+                self._protect_source_columns({output_unit})
+                source_units = self.df[self.unit_col].astype('string')
+                self.df[output_unit] = output_scale + '(' + source_units + ')'
+                self.unit_col = output_unit
 
         method_name = self.deduplicator.method
         if self.deduplicator.log_transform:
@@ -791,6 +1510,8 @@ class DiptoxPipeline:
 
         cfg = getattr(self, '_current_dedup_config', {})
         method_name = cfg.get('method', 'unknown')
+        if cfg.get('data_type') == 'continuous':
+            method_name += f" -> {cfg.get('aggregation', 'mean')}"
         trans = cfg.get('log_transform', "None")
         if trans != "None":
             method_name += f" ({trans} Transformed)"
@@ -799,7 +1520,12 @@ class DiptoxPipeline:
         dropna_str = "DropNA" if cfg.get('dropna_conditions', False) else "KeepNA"
         priority_list = cfg.get('priority')
         priority_str = f" | Priority: {priority_list}" if priority_list else ""
-        details = f"Method: {method_name} ({cfg.get('data_type', 'unknown')}) | {conds} | {dropna_str}{priority_str}"
+        excluded_count = len(self.excluded_df)
+        details = (
+            f"Method: {method_name} ({cfg.get('data_type', 'unknown')}) | "
+            f"Structure key: {dedup_structure_col} | {conds} | {dropna_str}{priority_str} | "
+            f"Excluded: {excluded_count}"
+        )
         self._record_step("Deduplication", df_start, self.df, details)
 
     @_run_on_main_process_only
@@ -813,21 +1539,17 @@ class DiptoxPipeline:
         """
         self._save_checkpoint()
         df_start = self.df.copy()
+        query_pattern_list = [query_pattern] if isinstance(query_pattern, str) else query_pattern
+        self._protect_source_columns({f'Substructure_{pattern}' for pattern in query_pattern_list})
         searcher = SubstructureSearcher(
             df=self.df,
             smiles_col='Canonical SMILES' if self._preprocess_key else self.smiles_col,
         )
-        query_pattern_list = [query_pattern] if isinstance(query_pattern, str) else query_pattern
         for query_pattern in query_pattern_list:
             results = searcher.search(query_pattern, is_smarts)
             col_name = f'Substructure_{query_pattern}'
-            if col_name not in self.df.columns:
-                self.df[col_name] = pd.Series(False, index=self.df.index, dtype="boolean")
-            else:
-                try:
-                    self.df[col_name] = self.df[col_name].astype("boolean")
-                except Exception:
-                    self.df[col_name] = pd.Series(False, index=self.df.index, dtype="boolean")
+            self.df[col_name] = pd.Series(False, index=self.df.index, dtype="boolean")
+            self._structure_derived_columns.add(col_name)
 
             for idx, _ in results['matches']:
                 self.df.at[idx, col_name] = True
@@ -1001,18 +1723,21 @@ class DiptoxPipeline:
         Calculate InChI strings locally using RDKit based on the current SMILES column.
         No web request required.
         """
-        smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
         inchi_col = 'InChI'
 
-        if inchi_col not in self.df.columns:
-            self.df[inchi_col] = pd.Series(pd.NA, index=self.df.index, dtype="string")
+        self._save_checkpoint()
+        self._protect_source_columns({inchi_col})
+        smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
+        self.df[inchi_col] = pd.Series(pd.NA, index=self.df.index, dtype="string")
+        self._structure_derived_columns.add(inchi_col)
 
         logger.info("Calculating InChI from SMILES using RDKit...")
 
         count = 0
-        for idx, row in tqdm(self.df.iterrows(), total=len(self.df), desc="InChI Calc"):
+        for idx, row in tqdm(self.df.iterrows(), total=len(self.df), desc="InChI Calc",
+                             disable=not self.interactive):
             smiles = row[smiles_col]
-            if pd.isna(smiles):
+            if not isinstance(smiles, str) or not smiles.strip():
                 continue
 
             mol = self.chem_processor.smiles_to_mol(smiles, sanitize=True)
@@ -1050,7 +1775,7 @@ class DiptoxPipeline:
 
         def is_valid_by_atom_count(row):
             s = row[smiles_col]
-            if pd.isna(s) or str(s).strip() == "":
+            if not isinstance(s, str) or not s.strip():
                 return False
 
             if self._preprocess_key and 'Is Valid' in row.index and not pd.isna(row['Is Valid']):
@@ -1068,8 +1793,19 @@ class DiptoxPipeline:
             )
 
         mask = self.df.apply(is_valid_by_atom_count, axis=1)
-
-        self.df = self.df[mask].reset_index(drop=True)
+        newly_excluded = ~mask
+        if self._preprocess_key:
+            newly_excluded &= self.df['Is Valid'].fillna(False)
+        excluded = self.df.loc[newly_excluded].copy()
+        if not excluded.empty:
+            excluded['Source DataFrame Index'] = self._source_labels(excluded.index)
+            excluded['Excluded At'] = 'Atom count filter'
+            excluded['Exclusion Reason'] = (
+                f'Atom count outside requested range: heavy={min_heavy_atoms}-{max_heavy_atoms}, '
+                f'total={min_total_atoms}-{max_total_atoms}'
+            )
+            self._merge_excluded_records(excluded, refresh_frame=excluded)
+        self.df = self.df.loc[mask].copy()
         final_count = len(self.df)
         logger.info(
             f"Filtered by atom count. Initial: {initial_count}, Final: {final_count}, Removed: {initial_count - final_count}")
@@ -1078,14 +1814,46 @@ class DiptoxPipeline:
 
     @_run_on_main_process_only
     @check_data_loaded
-    def save_results(self, output_path: str, columns: Optional[List[str]] = None) -> None:
+    def save_results(self, output_path: str, columns: Optional[List[str]] = None) -> Optional[str]:
         """
         Save the processed results to a file.
         :param output_path: The output path where the results will be saved.
         :param columns: The columns to save (default saves all columns).
         """
         save_cols = columns if columns else self.df.columns.tolist()
-        self.data_handler.save_data(self.df, output_path, save_cols, 'Canonical SMILES' if self._preprocess_key else self.smiles_col, self.id_col)
+        return self.data_handler.save_data(
+            self.df, output_path, save_cols,
+            'Canonical SMILES' if self._preprocess_key else self.smiles_col,
+            self.id_col, interactive=self.interactive,
+            source_smiles_col=self.smiles_col,
+        )
+
+    @_run_on_main_process_only
+    def get_excluded_records(self) -> pd.DataFrame:
+        """Return source rows that could not produce a modeling record during deduplication."""
+        return self.excluded_df.copy()
+
+    @_run_on_main_process_only
+    def save_excluded_results(self, output_path: str, columns: Optional[List[str]] = None) -> Optional[str]:
+        """Save deduplication exclusions with record-level reasons for audit."""
+        if self.excluded_df.empty:
+            raise ValueError("No excluded deduplication records are available.")
+        if output_path.lower().endswith(('.sdf', '.smi')):
+            raise ValueError("Excluded records must be exported as CSV, TXT, XLS, or XLSX.")
+        save_cols = columns if columns else self.excluded_df.columns.tolist()
+        missing_cols = [column for column in save_cols if column not in self.excluded_df.columns]
+        if missing_cols:
+            raise KeyError(f"Columns not found in excluded records: {missing_cols}")
+        smiles_col = 'Canonical SMILES' if self._preprocess_key else self.smiles_col
+        return self.data_handler.save_data(
+            self.excluded_df,
+            output_path,
+            save_cols,
+            smiles_col,
+            self.id_col,
+            interactive=self.interactive,
+            source_smiles_col=self.smiles_col,
+        )
 
     # Chemical rule management interface
     @_run_on_main_process_only

@@ -32,7 +32,7 @@ Cyclamate	OS(=O)(=O)NC1CCCCC1
 Cyclohexylamine	NC1CCCCC1
 Dichloroacetate	OC(=O)C(Cl)Cl
 Diethylamine	CCNCC
-Dimethylethanolamine	CC(C)(N)CO
+Dimethylethanolamine	CN(C)CCO
 Diolamine	OCCNCCO
 Edamine	NCCN
 Edisylate	OS(=O)(=O)CCS(=O)(=O)O
@@ -47,7 +47,7 @@ Gluceptate	OCC(O)C(O)C(O)C(O)C(O)C(=O)O
 Gluconate	OCC(O)C(O)C(O)C(O)C(=O)O
 Glucuronate	OC1OC(C(O)C(O)C1O)C(=O)O
 Glutamate	NC(CCC(=O)O)C(=O)O
-Glycerate	OCC(O)CO
+Glycerate	OCC(O)C(=O)O
 Glycerophosphate	OCC(O)COP(=O)(O)O
 Hexafluorophosphate	F[P](F)(F)(F)(F)F
 Hypophosphite	OP=O
@@ -103,7 +103,6 @@ EDTA	OC(=O)CN(CCN(CC(=O)O)CC(=O)O)CC(=O)O
 Elaidate and oleate	CCCCCCCCC=CCCCCCCCC(=O)O
 Enanthate	CCCCCCC(=O)O
 Etabonate	CCOC(=O)O
-Ethanediol	COCCO
 Etiprate	OC(=O)CNC(=O)c1ccccc1
 Etzadroxil	CCC(CC)C(=O)OCO
 Fostedate	CCCCCCCCCCCCCCOP(=O)(O)O

@@ -15,6 +15,11 @@ DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_LOG_DIR = "DiPTox-Logs"
 DEFAULT_LOG_LEVEL = logging.INFO
 
+# Libraries must not configure an application's root logger during import.
+_package_logger = logging.getLogger("diptox")
+if not any(isinstance(handler, logging.NullHandler) for handler in _package_logger.handlers):
+    _package_logger.addHandler(logging.NullHandler())
+
 
 class LogManager:
     def __init__(self):
@@ -34,15 +39,20 @@ class LogManager:
         fmt: str = DEFAULT_LOG_FORMAT,
         datefmt: str = DEFAULT_DATE_FORMAT,
         enable_console: bool = True,
-        enable_file: bool = True,
+        enable_file: bool = False,
         log_retention_days: int = 2,
         max_total_logs: Optional[int] = 5
     ):
-        """Global log configuration method."""
-        root_logger = logging.getLogger()
+        """Configure DiPTox logging explicitly, without changing root handlers.
 
-        if root_logger.hasHandlers():
-            root_logger.handlers.clear()
+        File logging is opt-in. Console messages are written to stderr so a CLI
+        can reserve stdout for machine-readable results.
+        """
+        package_logger = logging.getLogger("diptox")
+        for handler in list(package_logger.handlers):
+            if getattr(handler, "_diptox_managed", False):
+                package_logger.removeHandler(handler)
+                handler.close()
 
         is_gui_mode = os.environ.get("DIPTOX_GUI_MODE") == "true"
         is_worker_process = multiprocessing.current_process().name != 'MainProcess'
@@ -56,16 +66,16 @@ class LogManager:
         # Basic log formatter
         formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
 
-        # Initialize the root logger
-        root_logger = logging.getLogger()
-        root_logger.setLevel(logging.DEBUG)
+        package_logger.setLevel(logging.DEBUG)
+        package_logger.propagate = False
 
         # Console handler
         if enable_console:
-            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler = logging.StreamHandler(sys.stderr)
             console_handler.setLevel(console_level)
             console_handler.setFormatter(formatter)
-            root_logger.addHandler(console_handler)
+            console_handler._diptox_managed = True
+            package_logger.addHandler(console_handler)
 
         # File handler (rotating by size)
         if enable_file:
@@ -78,7 +88,8 @@ class LogManager:
                 )
                 file_handler.setLevel(file_level)
                 file_handler.setFormatter(formatter)
-                root_logger.addHandler(file_handler)
+                file_handler._diptox_managed = True
+                package_logger.addHandler(file_handler)
 
                 # Separate handler for error logs (rotating by time)
                 error_handler = TimedRotatingFileHandler(
@@ -90,7 +101,8 @@ class LogManager:
                 )
                 error_handler.setLevel(logging.WARNING)
                 error_handler.setFormatter(formatter)
-                root_logger.addHandler(error_handler)
+                error_handler._diptox_managed = True
+                package_logger.addHandler(error_handler)
 
                 self._setup_log_cleaner(
                     log_dir=log_dir,
@@ -100,19 +112,14 @@ class LogManager:
             except PermissionError:
                 pass
 
-        # Configure log level for third-party libraries
-        logging.getLogger("urllib3").setLevel(logging.WARNING)
-        logging.getLogger("requests").setLevel(logging.WARNING)
-
         self._configured = True
 
     def get_logger(self, name: Optional[str] = None) -> logging.Logger:
-        """Retrieve a configured logger."""
-        if not self._configured:
-            self.configure()
-
+        """Retrieve a library logger without enabling console or file logging."""
         if not name:
-            name = "root"
+            name = "diptox"
+        elif name != "diptox" and not name.startswith("diptox."):
+            name = f"diptox.{name}"
 
         if name in self.loggers:
             return self.loggers[name]
@@ -141,18 +148,18 @@ class LogManager:
             if f.stat().st_mtime < now - retention_days * 86400:
                 try:
                     f.unlink()
-                    logging.debug(f"Deleted old log backup: {f}")
+                    self.get_logger(__name__).debug(f"Deleted old log backup: {f}")
                 except PermissionError as e:
-                    logging.warning(f"The log backup cannot be deleted {f}: {e}")
+                    self.get_logger(__name__).warning(f"The log backup cannot be deleted {f}: {e}")
 
         if max_total and len(backup_files) > max_total:
             sorted_files = sorted(backup_files, key=lambda x: x.stat().st_mtime)
             for f in sorted_files[:len(backup_files) - max_total]:
                 try:
                     f.unlink()
-                    logging.debug(f"Removed excess log backup: {f}")
+                    self.get_logger(__name__).debug(f"Removed excess log backup: {f}")
                 except PermissionError as e:
-                    logging.warning(f"The log backup cannot be deleted {f}: {e}")
+                    self.get_logger(__name__).warning(f"The log backup cannot be deleted {f}: {e}")
 
         # Configure periodically clearing threads
         if not hasattr(self, '_cleaner_thread'):

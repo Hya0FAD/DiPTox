@@ -1,6 +1,6 @@
 # DiPTox - 计算毒理学数据整合与清洗
 
-[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.8+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)  [![PyPI下载量](https://static.pepy.tech/badge/diptox)](https://pepy.tech/project/diptox) [![Conda下载量](https://img.shields.io/conda/dn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox)
+[![PyPI](https://img.shields.io/pypi/v/diptox)](https://pypi.org/project/diptox/) [![Conda](https://img.shields.io/conda/vn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) [![Conda Platforms](https://img.shields.io/conda/pn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox) ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg) ![Python Version](https://img.shields.io/badge/python-3.10+-brightgreen.svg) [![English](https://img.shields.io/badge/-English-blue.svg)](./README.md)  [![PyPI下载量](https://static.pepy.tech/badge/diptox)](https://pepy.tech/project/diptox) [![Conda下载量](https://img.shields.io/conda/dn/conda-forge/diptox.svg)](https://anaconda.org/conda-forge/diptox)
 
 <p align="center">
   <img src="assets/TOC.png" alt="DiPTox 工作流示意图" width="500">
@@ -8,33 +8,14 @@
 
 **DiPTox** 是一个专为分子数据集的稳健预处理、标准化及多源数据整合而设计的 Python 工具包，专注于计算毒理学工作流。
 
-## 正式版 v1.0 发布
-我们很高兴宣布 DiPTox 在 PyPI 上发布了首个正式稳定版本！这一里程碑带来了生产级的稳定性和显著的性能提升：
+## v1.1.0 更新
 
-* **多进程加速 (Multi-Process Acceleration)**：
-    * 通过 `n_jobs` 参数将化学预处理任务的速度提升 **10倍以上**。
-    * 针对大规模数据集，智能分配任务至多个 CPU 核心。
-* **跨平台健壮性 (Cross-Platform Robustness)**：
-    * 针对 Windows 多进程环境实现了专门的 **"卫士机制 (Guard Mechanism)"**，有效防止内存爆炸和递归进程死循环问题。
-    * 已在 Windows、Linux 和 macOS 环境下通过稳定性验证。
-* **增强的数据加载**：
-    * 切换至二进制流解析模式读取 `.sdf` 和 `.mol` 文件，彻底解决编码崩溃问题（如 `utf-8` 与 `latin-1` 混淆）。
-    * 自动分子结构解析：即使文件中缺少属性列，也能直接从结构块生成 SMILES。
-### 版本更新日志 (1.0.6)
-* **数据读取修复**：修复并优化了对原生 `.smi` (SMILES) 文件的读取逻辑，解决了先前版本中的解析问题，确保大规模化学数据库的稳定加载。
-* **Web Request 网络模块全面重构**：针对大规模并发请求进行了加固。引入“能力清单”与针对语义/鉴权错误的短路拦截逻辑（Fast-Fail），消灭了无效重试死循环；同时清除了数据抓取中的“静默失败”现象，将极高颗粒度的精确死因（如 `Failed -> pubchem: Not Found | chemspider: Auth Error (401)`）以及精确到“字段级”的数据溯源记录直接写入结果中，使 API 调试完全透明，极大提升了毒理学数据集的审计置信度。
-### 版本更新日志(1.0.5)
-* **增强的单位标准化**：新增对常用数学符号 `^`（幂运算）的支持并自动映射为 `**`， 同时修复了当数据集中仅存在单一单位时系统会强制跳过转换程序的逻辑漏洞。
-* **去重逻辑功能升级**：在原有的 `-log10` 基础上新增了 `log10` 转换选项， 使工具包不仅能处理毒性数据（pIC50），还能完美适配水溶解度（logS）或分配系数等理化性质的去重需求。
-* **系统健壮性与容错处理**：在单位标准化与去重模块中引入了强制数值校验， 能够自动剔除目标列中的非法字符串（如 "N/A" 或 ">100"）并弹出警告，显著提升了处理真实实验数据的稳定性。
-* **关键状态重置修复**：修复了 `load_data` 方法未重置预处理标志位的问题， 确保了用户在重新加载数据集后，网络请求（Web Request）的自动列映射逻辑（如自动识别 `smiles_from_web`）能够恢复正常工作。
-### 版本更新日志(1.0.4)
-* **GUI 状态管理修复**：修复了在导出页面点击“撤销上一步”时触发的 `StreamlitAPIException`报错。通过引入 `on_click` 回调函数，在 UI 重新渲染前安全地更新组件状态，确保撤销操作不会崩溃。
-* **预处理规则优化**：调整并优化了部分默认的电荷中和规则（`Neutralization rules`）。
-### 版本更新日志(1.0.3)
-* **增强的单位标准化**：自定义转换公式现在完全支持分子量（`mw`），可以在摩尔浓度和质量浓度之间进行转换（例如，使用 `x * mw * 1000` 这样的公式）。
-* **GUI 界面优化**：Streamlit 图形界面经过了重新设计，呈现出更整洁的布局，减少了视觉干扰，直观地对配置面板进行了分组，并改善了组件对齐。
-* **全面的审计记录 (History)**：处理历史记录得到了大幅升级。它现在会详细记录每个操作的颗粒化参数——包括具体触发了哪些预处理规则、激活的去重条件、网络查询状态以及子结构搜索的匹配数量。
+- **CLI 与 JSON 流水线**：新增面向智能体和脚本的命令行入口，支持能力发现、数据检查、配置预检，以及预处理、单位转换、去重、子结构搜索、原子数过滤和 InChI 计算。
+- **网络补全与化学规则**：支持多源属性查询、限流、重试、总时限与字段来源记录；可通过 JSON 配置当前调用的化学规则。
+- **NiceGUI 图形界面**：页面间保留配置，耗时操作在后台运行；修改数据的任务成功后再提交结果。
+- **结果与审计**：CLI 提供结构化 JSON 响应、明确的退出码、源行追踪、排除记录和运行报告，便于复现与检查。
+
+操作方法见 [CLI 操作指南](docs/CLI_ZH.md)，当前及以往版本说明见 [更新日志](CHANGELOG.md#中文)。
 
 ## DiPTox 社区登记 (可选)
 为了更好地了解用户群体并改进软件，DiPTox 在首次使用时会提供一个一次性的、可选的用户信息登记。
@@ -44,8 +25,9 @@
 ## 核心功能
 
 #### 1. 图形用户界面 (GUI)
-基于 Streamlit 构建，允许用户通过可视化方式执行所有工作流，无需编写代码。
--   **可视化操作**：通过浏览器完全控制工作流。
+基于 NiceGUI 构建的本地 Web 界面允许用户通过浏览器执行所有工作流，无需编写代码。
+-   **页面状态持久**：在不同处理步骤间切换时，配置值不会丢失。
+-   **后台任务响应**：长时间计算和网络请求不会阻塞页面切换。
 -   **实时预览**：应用规则后即时查看数据变化。
 -   **规则管理**：交互式添加/移除有效原子、盐、溶剂及单位转换公式。
 -   **智能列映射**：智能识别表头及二进制文件结构。
@@ -72,7 +54,8 @@
 #### 4. 数据去重
 提供灵活的重复条目处理策略及高级控制。
 -   **数据类型**：支持 `continuous`（连续值，如 IC50）和 `discrete`（离散值，如 Active/Inactive）。
--   **去重方法**：`auto`（自动）、`IQR`（四分位距）、`3sigma`（标准差）、`vote`（投票）或自定义优先级规则。
+-   **连续值**：`method="auto"`、`"IQR"`、`"3sigma"` 选择异常值筛除方式；`aggregation="mean"`、`"max"`、`"min"` 选择剩余值的平均值、最大值或最小值。默认 Auto + 平均值；组内不超过 3 条记录时跳过异常值筛除。
+-   **离散值**：`method="vote"`（投票）或 `"priority"`（优先级）。
 -   **Log 变换**：支持在去重逻辑执行**前**应用 `-log10` 变换（例如 IC50 $\to$ pIC50），以正确处理生物活性数据。
 -   **灵活的 NaN 处理**：新增选项允许保留条件列中存在缺失值的行（将 *NaN* 视为一个独立分组），防止数据意外丢失。
 
@@ -122,7 +105,17 @@ mamba install diptox
 ```bash
 diptox-gui
 ```
-该命令将自动在您的默认 Web 浏览器中打开 DiPTox 界面。
+该命令会在本地启动 DiPTox，并自动在默认浏览器中打开界面。
+
+## 命令行模式（CLI）
+
+CLI 面向智能体和无人值守脚本，支持通过单步命令或 JSON 流水线处理数据。
+
+```bash
+diptox --help
+```
+
+安装与运行方式、完整参数、示例、网络补全和审计说明见 [CLI 操作指南](docs/CLI_ZH.md)。
 
 ## 快速入门
 ```python
@@ -151,17 +144,17 @@ def main():
     DP.preprocess(
       remove_salts=True,            # 移除盐片段。默认: True。
       remove_solvents=True,         # 移除溶剂片段。默认: True。
-      remove_mixtures=False,        # 基于片段大小处理混合物。默认: False。
-      hac_threshold=3,              # 用于移除片段的重原子数阈值。默认: 3。
-      keep_largest_fragment=True,   # 在混合物中保留最大的片段。默认: True。
+      mixture_mode="reject",       # keep / reject / largest。默认: reject。
+      hac_threshold=3,              # largest 模式要求唯一最大片段，且重原子数 > 3。
       remove_inorganic=True,        # 移除常见的无机分子。默认: True。
       neutralize=True,              # 中和分子上的电荷。默认: True。
       reject_non_neutral=False,     # 仅保留形式电荷为零的分子。默认：False。
-      check_valid_atoms=False,      # 检查所有原子是否在有效列表中。默认: False。
-      strict_atom_check=False,      # 若为True，则丢弃含无效原子的分子；若为False，则尝试从支链移除它们。默认: False。
+      element_policy="allow_all",  # allow_all / reject_metals / allowed_atoms。默认: allow_all。
+                                   # allowed_atoms：含非允许元素即剔除整个分子，不检查原子度数。
       remove_stereo=False,          # 移除立体化学信息 (如 @, / \)。默认: False。
       remove_isotopes=True,         # 移除同位素信息 (如 [13C])。默认: True。
       remove_hs=True,               # 移除显式的氢原子。默认: True。
+      add_hs=False,                 # 在全部化学处理结束后添加显式氢。默认: False。
       reject_radical_species=True,  # 移除含有游离基原子的分子。默认：True。
       n_jobs=4                      # 使用 4 个 CPU 核心加速。默认：1.
     )
@@ -169,7 +162,8 @@ def main():
     # 配置去重与单位标准化
     conversion_rules = {('g/L', 'mg/L'): 'x * 1000', 
                         ('ug/L', 'mg/L'): 'x / 1000',}
-    DP.config_deduplicator(condition_cols, data_type, method, custom_method, priority, standard_unit, conversion_rules, log_transform)
+    DP.standardize_units(standard_unit="mg/L", conversion_rules=conversion_rules)
+    DP.config_deduplicator(condition_cols=condition_cols, data_type=data_type, method=method, aggregation="mean")
     DP.dataset_deduplicate()
 
     # 配置Web查询
@@ -196,7 +190,23 @@ if __name__ == '__main__':
     main()
 ```
 
+凡公式使用 `mw`，必须明确选择 `molecular_weight_source="original"`、`"standardized"` 或指定 `molecular_weight_col`。`standardized` 要求先完成预处理；分子量来源默认未选择。不使用 MW 的单位倍率换算无需选择。`mixture_mode="largest"` 遇到并列最大片段时以 `Ambiguous parent` 拒绝。当 `remove_hs` 与 `add_hs` 同时开启时，先去氢，并在其他化学处理全部结束后加氢。Python 接口仅为兼容保留旧混合物/元素开关，新代码请使用 `mixture_mode` 和 `element_policy`。
+
+`Canonical SMILES` 去除原子映射编号，原始 SMILES 和 `Original Canonical SMILES` 保留来源标记。除盐、除溶剂和混合物处理均在剩余组分全部相同时只保留一份：`A.A → A`，`A.A.B` 不会局部去重为 `A.B`。混合物模式（包括 `keep`）在此规则之后执行，不增加独立开关。全部为同一种已知溶剂的重复项也会合为一份；其他已选化学规则仍照常执行。
+
+乙二醇 `OCCO` 和 2-甲氧基乙醇 `COCCO` 按溶剂处理，不由盐规则移除。盐和溶剂使用相同的完整片段匹配入口，支持亚砜（例如 DMSO）的 `S=O` / `[S+][O-]` 两种表示。`reject_metals` 使用明确的金属集合；贵气体及 B、Si、Ge、As、Sb、Te 不计为金属，`allowed_atoms` 则另按用户配置的原子列表检查。
+
 ## 高级配置
+
+### 连续处理与原始数据保护
+
+输入字段与程序输出列重名时，程序自动将原字段保留为 `原列名 (Input)` 并更新映射，无需预先修改 Excel。SDF 导出也会同步用户指定的自定义结构字段，并归档原始声明。
+
+中和位点按规范顺序选择，避免 SMILES 写法影响结果。启用组分处理时，中和或加氢结束后再次合并全部相同的组分；`A.A.B` 仍不进行局部去重。非字符串 SMILES 按行标记无效，不中断其他记录。
+
+重新预处理改变标准分子量时，依赖旧标准分子量的目标值会清空并标记 `Stale standardized molecular weight`。请从原始浓度重新换算后再去重；已聚合的数据需要先撤销或恢复原始记录。纯倍率换算和不依赖标准结构的 MW 来源不受影响。
+
+`log_transform` 保留原值，将对数结果写入新目标列，单位明确显示为 `-log10(M)` 等形式。相同设置重复去重不会再次取对数。对数目标不能直接用于线性单位换算；先撤销对数处理或重新选择原始线性数据。新指定的去重单位会执行；连续目标中的 `inf/-inf` 会被排除。
 
 ### Web服务集成
 DiPTox 支持以下化学数据库：
@@ -224,11 +234,13 @@ DP.config_web_request(
   - `tqdm`
   - `openpyxl`
   - `scipy`
-  - `streamlit>=1.0.0` (运行 GUI 所需)
+  - Python 3.8/3.9：`nicegui==2.24.2`；Python 3.10 及以上：`nicegui>=3.16,<4`（安装时自动选择）
 - **可选依赖** (根据需要安装，如不安装则使用`requests`发送请求):
   - `pubchempy>=1.0.5`: 用于 PubChem 集成
   - `chemspipy>=2.0.0`: 用于 ChemSpider 集成 (需要 API 密钥)
   - `ctx-python>=0.0.1a10`: 用于 CompTox Dashboard 集成 (需要 API 密钥)
+
+两个 Python 版本分支共用同一套新版 GUI 和处理功能，包括后台任务、化学规则配置、单位换算、去重、筛选与导出。兼容层适配旧版框架的文件上传和 Python 3.8 的后台线程任务。在所需 Python 环境中运行 `python -m pip install .` 即可安装当前源码。Python 3.8/3.9 使用旧版框架，GUI 默认仅监听本机 `127.0.0.1`。
 
 ## 许可证
 本项目采用 Apache 2.0 许可证 - 详见 [LICENSE](LICENSE) 文件。

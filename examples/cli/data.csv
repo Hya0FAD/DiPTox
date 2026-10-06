@@ -1,0 +1,7 @@
+ID,SMILES,Value,Unit,Species
+ethanol-a,CCO,1000,ug/L,fish
+ethanol-b,CCO,1,mg/L,fish
+acetate-a,CC(=O)O,2,mg/L,fish
+acetate-b,CC(=O)O,2000,ug/L,fish
+invalid-structure,not-a-smiles,3,mg/L,fish
+invalid-value,CCC,missing,mg/L,fish

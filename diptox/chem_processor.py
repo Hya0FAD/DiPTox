@@ -5,8 +5,21 @@ import io
 from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem, SaltRemover, rdmolops
 from typing import List, Tuple, Optional, Callable
+from .element_policy import REMOVABLE_ALKALI_METALS, is_metal
 from .logger import log_manager
 logger = log_manager.get_logger(__name__)
+
+
+class AmbiguousFragmentError(ValueError):
+    """The largest-fragment policy cannot choose a unique molecular identity."""
+
+    def __init__(self, heavy_atom_count: int, candidates: List[str]):
+        self.heavy_atom_count = heavy_atom_count
+        self.candidates = tuple(sorted(candidates))
+        super().__init__(
+            f"Ambiguous largest fragment: {len(self.candidates)} distinct components "
+            f"have {heavy_atom_count} heavy atoms ({'; '.join(self.candidates)})"
+        )
 
 
 class ChemistryProcessor:
@@ -17,7 +30,7 @@ class ChemistryProcessor:
         self._default_salts()
         self._solvents = self._default_solvents()
         self._neutralization_rules = self._default_neutralization_rules()
-        self._valid = {'Br', 'C', 'Cl', 'F', 'H', 'I', 'N', 'O', 'P', 'S', 'Si', 'As', 'Se', 'Te', 'At'}
+        self._valid = {'B', 'Br', 'C', 'Cl', 'F', 'H', 'I', 'N', 'O', 'P', 'S', 'Si', 'As', 'Se', 'Te', 'At'}
         self._custom_salts = []
         self._removed_salts = []
         self._custom_solvents = []
@@ -268,19 +281,26 @@ class ChemistryProcessor:
     @staticmethod
     def CombineFragments(fragments: List[Chem.Mol]) -> Chem.Mol:
         """Combine multiple fragments into a single molecule."""
-        smiles = [Chem.MolToSmiles(f, isomericSmiles=True, canonical=True) for f in fragments]
-        return Chem.MolFromSmiles('.'.join(smiles))
+        combined = Chem.Mol()
+        for fragment in fragments:
+            combined = Chem.CombineMols(combined, fragment)
+        return combined
 
     @staticmethod
-    def smiles_to_mol(smiles: str, sanitize: bool = True) -> Optional[Chem.Mol]:
+    def smiles_to_mol(smiles: str, sanitize: bool = True,
+                      remove_hs: bool = True) -> Optional[Chem.Mol]:
         """
         Convert a SMILES string to a molecular object.
         :param sanitize: Whether to perform chemical validation.
+        :param remove_hs: Whether the parser should remove ordinary explicit hydrogen atoms.
         """
-        if smiles is None:
+        if not isinstance(smiles, str):
             return None
+        parameters = Chem.SmilesParserParams()
+        parameters.sanitize = sanitize
+        parameters.removeHs = remove_hs
         with redirect_stderr(io.StringIO()):
-            mol = Chem.MolFromSmiles(str(smiles), sanitize=sanitize)
+            mol = Chem.MolFromSmiles(smiles, parameters)
         if mol is None:
             logger.warning(f"Invalid SMILES: {smiles}")
         return mol
@@ -288,10 +308,13 @@ class ChemistryProcessor:
     @staticmethod
     def standardize_smiles(mol: Chem.Mol, canonical: bool = True) -> Optional[str]:
         """
-        Generate standardized SMILES.
+        Generate standardized SMILES without atom-map annotations, leaving the input intact.
         :param canonical: Whether to generate canonical form.
         """
-        return Chem.MolToSmiles(mol, canonical=canonical)
+        unannotated = Chem.Mol(mol)
+        for atom in unannotated.GetAtoms():
+            atom.SetAtomMapNum(0)
+        return Chem.MolToSmiles(unannotated, canonical=canonical)
 
     @staticmethod
     def remove_isotopes(mol: Chem.Mol) -> Chem.Mol:
@@ -306,11 +329,30 @@ class ChemistryProcessor:
 
     @staticmethod
     def reject_radicals(mol: Chem.Mol) -> Optional[Chem.Mol]:
-        """If the molecule contains free radical electrons, it will be rejected"""
+        """Reject radicals except the known nitric oxide and aminoxyl motifs."""
         if mol is None:
             return None
         for a in mol.GetAtoms():
-            if a.GetNumRadicalElectrons() > 0:
+            radical_electrons = a.GetNumRadicalElectrons()
+            if radical_electrons == 0:
+                continue
+
+            neighbors = a.GetNeighbors()
+            allowed = False
+            if radical_electrons == 1 and len(neighbors) == 1:
+                neighbor = neighbors[0]
+                bond = mol.GetBondBetweenAtoms(a.GetIdx(), neighbor.GetIdx())
+                allowed = (
+                    a.GetAtomicNum() == 7
+                    and neighbor.GetAtomicNum() == 8
+                    and bond.GetBondType() == Chem.BondType.DOUBLE
+                ) or (
+                    a.GetAtomicNum() == 8
+                    and neighbor.GetAtomicNum() == 7
+                    and bond.GetBondType() == Chem.BondType.SINGLE
+                )
+
+            if not allowed:
                 logger.warning(
                     f"Radical detected on atom {a.GetIdx()} "
                     f"({a.GetSymbol()}) in {Chem.MolToSmiles(mol)}. Molecule rejected."
@@ -329,58 +371,271 @@ class ChemistryProcessor:
         """Remove hydrogen atoms"""
         return Chem.RemoveHs(mol)
 
+    @staticmethod
+    def add_hydrogens(mol: Chem.Mol) -> Chem.Mol:
+        """Expand implicit hydrogen counts to explicit atoms on a molecule copy."""
+        return Chem.AddHs(mol)
+
+    @staticmethod
+    def reject_dummy_atoms(mol: Chem.Mol) -> Optional[Chem.Mol]:
+        """Reject wildcard/dummy atoms because they do not define a complete molecule."""
+        return None if any(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms()) else mol
+
+    @staticmethod
+    def _replace_neutralization_site(mol: Chem.Mol, pattern: Chem.Mol,
+                                    replacement: Chem.Mol,
+                                    proton_transfer: bool) -> Chem.Mol:
+        """Preserve atom identity for single-atom rules; retain general custom replacements."""
+        # A fixed charge can leave only some acid/base sites neutralized. Choose
+        # those sites in canonical graph order, independently of input atom order
+        # and atom-map labels, without renumbering the retained source molecule.
+        ranking_copy = Chem.Mol(mol)
+        for atom in ranking_copy.GetAtoms():
+            atom.SetAtomMapNum(0)
+        ranks = Chem.CanonicalRankAtoms(ranking_copy, includeChirality=True,
+                                       includeIsotopes=True)
+        order = sorted(range(mol.GetNumAtoms()), key=lambda idx: ranks[idx])
+        ordered = Chem.RenumberAtoms(mol, order)
+        match = tuple(order[idx] for idx in ordered.GetSubstructMatch(pattern))
+        if pattern.GetNumAtoms() != 1 or replacement.GetNumAtoms() != 1:
+            return Chem.ReplaceSubstructs(ordered, pattern, replacement, replaceAll=False)[0]
+
+        original = mol.GetAtomWithIdx(match[0])
+        product = replacement.GetAtomWithIdx(0)
+        if original.GetAtomicNum() != product.GetAtomicNum():
+            return Chem.ReplaceSubstructs(ordered, pattern, replacement, replaceAll=False)[0]
+
+        candidate = Chem.RWMol(mol)
+        atom = candidate.GetAtomWithIdx(match[0])
+        hydrogen_indices = []
+        if proton_transfer:
+            hydrogen_neighbors = [neighbor for neighbor in original.GetNeighbors()
+                                  if neighbor.GetAtomicNum() == 1]
+            target_hydrogens = (original.GetTotalNumHs(includeNeighbors=True)
+                                + product.GetFormalCharge() - original.GetFormalCharge())
+            remove_count = max(0, len(hydrogen_neighbors) - target_hydrogens)
+            # Prefer unlabelled protons when the source explicitly represents every H.
+            hydrogen_neighbors.sort(key=lambda h: (h.GetIsotope() != 0,
+                                                   h.GetAtomMapNum() != 0,
+                                                   h.GetIsotope(), h.GetAtomMapNum(),
+                                                   ranks[h.GetIdx()]))
+            hydrogen_indices = [h.GetIdx() for h in hydrogen_neighbors[:remove_count]]
+            atom.SetNumExplicitHs(max(0, target_hydrogens
+                                      - len(hydrogen_neighbors) + len(hydrogen_indices)))
+            atom.SetNoImplicit(True)
+        else:
+            atom.SetNumExplicitHs(product.GetNumExplicitHs())
+            atom.SetNoImplicit(product.GetNoImplicit())
+
+        atom.SetFormalCharge(product.GetFormalCharge())
+        atom.SetIsAromatic(product.GetIsAromatic())
+        atom.SetNumRadicalElectrons(product.GetNumRadicalElectrons())
+        if product.GetIsotope():
+            atom.SetIsotope(product.GetIsotope())
+        if product.GetAtomMapNum():
+            atom.SetAtomMapNum(product.GetAtomMapNum())
+
+        for hydrogen_idx in sorted(hydrogen_indices, reverse=True):
+            neighbors = [neighbor.GetIdx() for neighbor in atom.GetNeighbors()]
+            if (atom.GetChiralTag() in (Chem.ChiralType.CHI_TETRAHEDRAL_CW,
+                                       Chem.ChiralType.CHI_TETRAHEDRAL_CCW)
+                    and (len(neighbors) - 1 - neighbors.index(hydrogen_idx)) % 2):
+                atom.InvertChirality()
+            candidate.RemoveAtom(hydrogen_idx)
+        return candidate.GetMol()
+
     def neutralize_charges(self, mol: Chem.Mol, reject_non_neutral: bool = False) -> Optional[Chem.Mol]:
-        """Charge neutralization processing and optionally reject non-neutral molecules."""
+        """Neutralize proton-transfer sites while preserving fixed-charge compensation."""
+        replacement_limit = max(100, 10 * mol.GetNumAtoms())
+        replacements = 0
+        compiled_rules = []
+        neutralizable_atoms = set()
+        default_rules = set(self._default_neutralization_rules())
         for reactant, product in self._neutralization_rules:
             patt = Chem.MolFromSmarts(reactant)
             repl = Chem.MolFromSmiles(product, False)
-            while mol.HasSubstructMatch(patt):
-                mol = Chem.ReplaceSubstructs(mol, patt, repl)[0]
-        Chem.SanitizeMol(mol)
+            compiled_rules.append((patt, repl, (reactant, product) in default_rules))
+            for match in mol.GetSubstructMatches(patt):
+                if match and mol.GetAtomWithIdx(match[0]).GetFormalCharge() != 0:
+                    neutralizable_atoms.add(match[0])
 
-        if reject_non_neutral:
-            charge = rdmolops.GetFormalCharge(mol)
-            if charge != 0:
-                logger.info(f"Non-neutral molecule ({charge}) {Chem.MolToSmiles(mol)} rejected.")
-                return None
+        # Balanced fixed charges, such as a nitro group's N+/O-, do not need
+        # compensation from proton-transfer sites elsewhere in the molecule.
+        permanent_net_charge = sum(
+            atom.GetFormalCharge() for atom in mol.GetAtoms()
+            if atom.GetIdx() not in neutralizable_atoms
+        )
+
+        for patt, repl, proton_transfer in compiled_rules:
+            seen_structures = {Chem.MolToSmiles(mol, canonical=True)}
+            while mol.HasSubstructMatch(patt):
+                if replacements >= replacement_limit:
+                    logger.warning("Neutralization stopped: custom rules exceeded the replacement limit.")
+                    return None
+                old_charge = rdmolops.GetFormalCharge(mol)
+                candidate = self._replace_neutralization_site(mol, patt, repl, proton_transfer)
+                Chem.SanitizeMol(candidate)
+                new_charge = rdmolops.GetFormalCharge(candidate)
+                if permanent_net_charge and abs(new_charge) >= abs(old_charge):
+                    break
+                candidate_smiles = Chem.MolToSmiles(candidate, canonical=True)
+                if candidate_smiles in seen_structures:
+                    logger.warning("Neutralization stopped: a custom rule repeated a structure without progress.")
+                    return None
+                seen_structures.add(candidate_smiles)
+                replacements += 1
+                mol = candidate
+        Chem.SanitizeMol(mol)
+        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+
+        if reject_non_neutral and self.reject_non_neutral(mol) is None:
+            return None
         return mol
 
-    def remove_salts(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
-        """Remove salts."""
-        self.remover.salts = self._get_effective_salts()
+    @staticmethod
+    def reject_non_neutral(mol: Chem.Mol) -> Optional[Chem.Mol]:
+        """Reject a molecule whose total formal charge is not zero."""
+        charge = rdmolops.GetFormalCharge(mol)
+        if charge != 0:
+            logger.info(f"Non-neutral molecule ({charge}) {Chem.MolToSmiles(mol)} rejected.")
+            return None
+        return mol
 
-        if mol.GetNumAtoms() >= 2 and len(Chem.GetMolFrags(mol)) == 1:
+    @staticmethod
+    def _fragment_matches(fragment: Chem.Mol, patterns: List[Chem.Mol]) -> bool:
+        """Match whole fragments, allowing only a narrow sulfoxide representation fallback."""
+        # Match implicit-H dictionaries without changing explicitly retained source atoms.
+        candidates = [fragment]
+        if any(atom.GetAtomicNum() == 1 and atom.GetDegree() > 0
+               and atom.GetIsotope() == 0 for atom in fragment.GetAtoms()):
+            candidates.append(Chem.RemoveHs(fragment))
+
+        def matches(candidate, pattern):
+            return (candidate.GetNumAtoms() == pattern.GetNumAtoms()
+                    and candidate.GetNumBonds() == pattern.GetNumBonds()
+                    and candidate.HasSubstructMatch(pattern, useChirality=True))
+
+        if any(matches(candidate, pattern) for pattern in patterns for candidate in candidates):
+            return True
+        return any(
+            matches(view, pattern)
+            for candidate in candidates
+            for view in ChemistryProcessor._sulfoxide_matching_views(candidate)
+            for pattern in patterns
+        )
+
+    @staticmethod
+    def _sulfoxide_matching_views(fragment: Chem.Mol) -> List[Chem.Mol]:
+        """Copy R-S(=O)-R / R-S+(-O-)-R views; never normalize SMARTS or retained molecules."""
+        if fragment.HasQuery() or any(atom.GetNumRadicalElectrons() for atom in fragment.GetAtoms()):
+            return []
+        sites = []
+        for sulfur in fragment.GetAtoms():
+            if (sulfur.GetAtomicNum() != 16 or sulfur.GetIsAromatic()
+                    or sulfur.GetDegree() != 3 or sulfur.GetTotalNumHs(includeNeighbors=True)):
+                continue
+            neighbors = list(sulfur.GetNeighbors())
+            oxygens = [atom for atom in neighbors if atom.GetAtomicNum() == 8]
+            carbons = [atom for atom in neighbors if atom.GetAtomicNum() == 6]
+            if len(oxygens) != 1 or len(carbons) != 2:
+                continue
+            oxygen = oxygens[0]
+            if oxygen.GetDegree() != 1 or oxygen.GetTotalNumHs(includeNeighbors=True):
+                continue
+            if any(fragment.GetBondBetweenAtoms(sulfur.GetIdx(), carbon.GetIdx()).GetBondType()
+                   != Chem.BondType.SINGLE for carbon in carbons):
+                continue
+            bond = fragment.GetBondBetweenAtoms(sulfur.GetIdx(), oxygen.GetIdx())
+            neutral = (sulfur.GetFormalCharge() == 0 and oxygen.GetFormalCharge() == 0
+                       and bond.GetBondType() == Chem.BondType.DOUBLE)
+            separated = (sulfur.GetFormalCharge() == 1 and oxygen.GetFormalCharge() == -1
+                         and bond.GetBondType() == Chem.BondType.SINGLE)
+            if neutral or separated:
+                sites.append((sulfur.GetIdx(), oxygen.GetIdx(), separated))
+
+        views = []
+        for separated in (False, True):
+            if not any(current != separated for _, _, current in sites):
+                continue
+            view = Chem.RWMol(fragment)
+            for sulfur_idx, oxygen_idx, _ in sites:
+                view.GetAtomWithIdx(sulfur_idx).SetFormalCharge(1 if separated else 0)
+                view.GetAtomWithIdx(oxygen_idx).SetFormalCharge(-1 if separated else 0)
+                view.GetBondBetweenAtoms(sulfur_idx, oxygen_idx).SetBondType(
+                    Chem.BondType.SINGLE if separated else Chem.BondType.DOUBLE
+                )
+            molecule = view.GetMol()
+            if Chem.SanitizeMol(molecule, catchErrors=True) == Chem.SanitizeFlags.SANITIZE_NONE:
+                Chem.AssignStereochemistry(molecule, cleanIt=True, force=True)
+                views.append(molecule)
+        return views
+
+    @staticmethod
+    def _collapse_identical_fragments(fragments: List[Chem.Mol]) -> List[Chem.Mol]:
+        """Retain one copy only when every fragment has the same map-free identity."""
+        if len(fragments) <= 1:
+            return fragments
+        identity = ChemistryProcessor.standardize_smiles(fragments[0])
+        if all(ChemistryProcessor.standardize_smiles(fragment) == identity
+               for fragment in fragments[1:]):
+            return fragments[:1]
+        return fragments
+
+    @staticmethod
+    def collapse_identical_components(mol: Chem.Mol) -> Chem.Mol:
+        """Fold an all-identical final mixture without partially deduplicating A.A.B."""
+        fragments = list(Chem.GetMolFrags(mol, asMols=True))
+        retained = ChemistryProcessor._collapse_identical_fragments(fragments)
+        return retained[0] if len(fragments) > 1 and len(retained) == 1 else mol
+
+    @staticmethod
+    def _has_carbon(fragment: Chem.Mol) -> bool:
+        return any(atom.GetAtomicNum() == 6 for atom in fragment.GetAtoms())
+
+    @staticmethod
+    def _contains_non_counterion_metal(fragment: Chem.Mol) -> bool:
+        return any(
+            is_metal(atom.GetAtomicNum()) and atom.GetAtomicNum() not in REMOVABLE_ALKALI_METALS
+            for atom in fragment.GetAtoms()
+        )
+
+    @staticmethod
+    def _contains_metal(fragment: Chem.Mol) -> bool:
+        return any(is_metal(atom.GetAtomicNum()) for atom in fragment.GetAtoms())
+
+    def remove_salts(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
+        """Remove counterions while protecting a possible organic parent fragment."""
+        fragments = list(Chem.GetMolFrags(mol, asMols=True))
+        if len(fragments) <= 1:
             return mol
 
-        stripped = self.remover.StripMol(mol)
-        if stripped.GetNumAtoms() == 0:
-            frags = Chem.GetMolFrags(mol, asMols=True)
-            best_frag = sorted(
-                frags,
-                key=lambda f: (
-                    f.GetNumHeavyAtoms(),
-                    sum(1 for a in f.GetAtoms() if a.GetAtomicNum() == 6),
-                    Chem.MolToSmiles(f, canonical=True)
-                ),
-                reverse=True
-            )[0]
-            return best_frag
+        salts = self._get_effective_salts()
+        solvents = self._get_effective_solvents()
+        salt_flags = [self._fragment_matches(fragment, salts) for fragment in fragments]
+        non_salts = [fragment for fragment, is_salt in zip(fragments, salt_flags) if not is_salt]
+        carbon_salts = [
+            fragment for fragment, is_salt in zip(fragments, salt_flags)
+            if is_salt and self._has_carbon(fragment)
+        ]
+        protected_metals = [
+            fragment for fragment, is_salt in zip(fragments, salt_flags)
+            if is_salt and not self._has_carbon(fragment)
+            and self._contains_non_counterion_metal(fragment)
+        ]
+        non_salt_parents = [
+            fragment for fragment in non_salts
+            if self._has_carbon(fragment) and not self._fragment_matches(fragment, solvents)
+        ]
 
-        fragments = Chem.GetMolFrags(stripped, asMols=True)
-        if len(fragments) == 1:
-            return stripped
-        first_smiles = Chem.MolToSmiles(fragments[0], canonical=True)
-        all_identical = all(
-            Chem.MolToSmiles(frag, canonical=True) == first_smiles
-            for frag in fragments[1:]
-        )
-        if all_identical:
-            return fragments[0]
+        if non_salt_parents:
+            retained = non_salts + protected_metals
+        elif carbon_salts:
+            retained = carbon_salts + non_salts + protected_metals
         else:
-            combined = fragments[0]
-            for frag in fragments[1:]:
-                combined = self.CombineFragments([combined, frag])
-            return combined
+            # Do not turn a salt/solvent mixture into a solvent-only success.
+            retained = fragments
+
+        return self.CombineFragments(self._collapse_identical_fragments(retained))
 
     def remove_solvents(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
         """Remove solvents."""
@@ -392,59 +647,51 @@ class ChemistryProcessor:
         if len(fragments) == 0:
             return None
 
-        non_solvent = [
-            frag for frag in fragments
-            if not any(frag.HasSubstructMatch(solvent) and solvent.HasSubstructMatch(frag) for solvent in self._solvents)
-        ]
-        if not non_solvent:
-            best_frag = sorted(
-                fragments,
-                key=lambda f: (
-                    f.GetNumHeavyAtoms(),
-                    sum(1 for a in f.GetAtoms() if a.GetAtomicNum() == 6),
-                    Chem.MolToSmiles(f, canonical=True)
-                ),
-                reverse=True
-            )[0]
-            return best_frag
-
-        first_smiles = Chem.MolToSmiles(non_solvent[0], canonical=True)
-        all_identical = all(
-            Chem.MolToSmiles(frag, canonical=True) == first_smiles
-            for frag in non_solvent[1:]
-        )
-        if all_identical:
-            return non_solvent[0]
-        else:
-            combined = non_solvent[0]
-            for frag in non_solvent[1:]:
-                combined = self.CombineFragments([combined, frag])
-            return combined
+        non_solvent = [frag for frag in fragments if not self._fragment_matches(frag, self._solvents)]
+        retained = self._collapse_identical_fragments(non_solvent or list(fragments))
+        if len(retained) == 1:
+            return retained[0]
+        return self.CombineFragments(retained)
 
     @staticmethod
     def remove_mixtures(mol: Chem.Mol,
                         hac_threshold: int = 3,
-                        keep_largest: bool = True,) -> Optional[Chem.Mol]:
-        """Remove mixtures.
-        :param keep_largest: Whether to keep the largest molecules.
-        :param hac_threshold: Threshold of hac molecules."""
-        fragments = list(rdmolops.GetMolFrags(mol, asMols=True))
-        if len(fragments) > 1:
-            fragments = [f for f in fragments if f.GetNumHeavyAtoms() > hac_threshold]
-        if len(fragments) > 1:
+                        keep_largest: bool = False,
+                        mode: Optional[str] = None) -> Optional[Chem.Mol]:
+        """Handle disconnected components by keeping, rejecting, or selecting the largest."""
+        fragments = ChemistryProcessor._collapse_identical_fragments(
+            list(rdmolops.GetMolFrags(mol, asMols=True))
+        )
+        if len(fragments) <= 1:
+            return fragments[0] if fragments else None
+
+        resolved_mode = mode or ("largest" if keep_largest else "reject")
+        if resolved_mode == "keep":
+            return mol
+        if resolved_mode == "reject":
             logger.warning(
-                f"{Chem.MolToSmiles(mol)} contains >1 fragment with >" + str(hac_threshold) + " heavy atoms")
-            return max(fragments, key=lambda x: x.GetNumHeavyAtoms()) if keep_largest else None
-        elif len(fragments) == 0:
+                f"{Chem.MolToSmiles(mol)} contains multiple unresolved fragments. Molecule rejected.")
+            return None
+        if resolved_mode != "largest":
+            raise ValueError("Mixture mode must be 'keep', 'reject', or 'largest'.")
+
+        candidates = [fragment for fragment in fragments if fragment.GetNumHeavyAtoms() > hac_threshold]
+        if not candidates:
             logger.warning(
                 f"{Chem.MolToSmiles(mol)} contains no fragments with >" + str(hac_threshold) + " heavy atoms")
             return None
-        else:
-            return fragments[0]
+        largest_size = max(fragment.GetNumHeavyAtoms() for fragment in candidates)
+        largest = {
+            ChemistryProcessor.standardize_smiles(fragment): fragment
+            for fragment in candidates if fragment.GetNumHeavyAtoms() == largest_size
+        }
+        if len(largest) > 1:
+            raise AmbiguousFragmentError(largest_size, list(largest))
+        return next(iter(largest.values()))
 
     @staticmethod
     def remove_inorganic(mol: Chem.Mol) -> Optional[Chem.Mol]:
-        """Remove inorganic atoms"""
+        """Reject carbon-free and selected small inorganic structures."""
         has_carbon = any(atom.GetSymbol() == 'C' for atom in mol.GetAtoms())
         if not has_carbon:
             return None
@@ -453,7 +700,7 @@ class ChemistryProcessor:
             '[#6]#[#7]', '[#8]=[#6]=[#8]', '[#6]#[#8]', '[#8]=[#6]=[#16]', '[#8]=[#6]=[#6]=[#6]=[#8]',
             '[#8]~[#6](=[#8])~[#8]', '[#16]=[#6]=[#16]', '[#7]=[#6]=[#8]', '[#8]-[#6]#[#7]',
             '[#16]-[#6]#[#7]', '[#7]=[#6]=[#16]', '[#34]-[#6]#[#7]', '[F,Cl,Br,I]-[#6]#[#7]',
-            '[#7]#[#6]-[#6]#[#7]', '[Cl]-[#6](=[#8])-[Cl]', '[Cl]-[#6](=[#16])-[Cl]', '[#6]',
+            '[#7]#[#6]-[#6]#[#7]', '[Cl]-[#6](=[#8])-[Cl]', '[Cl]-[#6](=[#16])-[Cl]',
         ]
         for smarts in inorganic_smarts:
             pattern = Chem.MolFromSmarts(smarts)
@@ -464,55 +711,21 @@ class ChemistryProcessor:
 
         return mol
 
-    def effective_atom(self, mol: Chem.Mol, strict: bool = False) -> Optional[Chem.Mol]:
-        """
-        Check if all atoms in the molecule are valid according to the list of valid atoms.
-        :param mol: The molecular object to check.
-        :param strict: If True, reject the entire molecule if any invalid atoms are found.
-                       If False, attempt to remove only terminal invalid atoms.
-        """
+    @staticmethod
+    def reject_metals(mol: Chem.Mol) -> Optional[Chem.Mol]:
+        """Reject structures containing a metal while leaving atom validation independent."""
+        return None if ChemistryProcessor._contains_metal(mol) else mol
+
+    def effective_atom(self, mol: Chem.Mol) -> Optional[Chem.Mol]:
+        """Reject the whole molecule if any element is outside the allowed list."""
         invalid_elements = {atom.GetSymbol() for atom in mol.GetAtoms()} - self._valid
         if not invalid_elements:
             return mol
-        original_smiles = Chem.MolToSmiles(mol)
-        if strict:
-            logger.error(
-                f"Strict check: Invalid atoms {invalid_elements} detected in molecule {original_smiles}. Molecule removed."
-            )
-            return None
-
-        rw_mol = Chem.RWMol(mol)
-        atoms_to_remove_indices = []
-
-        for atom in rw_mol.GetAtoms():
-            if atom.GetSymbol() in invalid_elements:
-                if atom.GetDegree() > 1:
-                    logger.warning(
-                        f"Cannot remove non-terminal invalid atom '{atom.GetSymbol()}' from {original_smiles}. Molecule rejected."
-                    )
-                    return None
-                atoms_to_remove_indices.append(atom.GetIdx())
-
-        for idx in sorted(atoms_to_remove_indices, reverse=True):
-            rw_mol.RemoveAtom(idx)
-
-        if rw_mol.GetNumAtoms() == 0:
-            logger.warning(f"Molecule {original_smiles} became empty after removing invalid atoms. Molecule rejected.")
-            return None
-
-        try:
-            cleaned_mol = rw_mol.GetMol()
-            Chem.SanitizeMol(cleaned_mol)
-            logger.info(
-                f"Removed invalid atoms {invalid_elements} from {original_smiles}, "
-                f"resulting in {Chem.MolToSmiles(cleaned_mol)}."
-            )
-            return cleaned_mol
-        except Exception as e:
-            logger.error(
-                f"Sanitization failed for {original_smiles} after removing atoms: {e}. Molecule rejected."
-            )
-            return None
+        logger.warning(
+            f"Invalid elements {sorted(invalid_elements)} detected in molecule "
+            f"{Chem.MolToSmiles(mol)}. Molecule rejected."
+        )
+        return None
 
     def display_current_rules(self) -> None:
         """Prints a summary of the currently active chemical processing rules."""
@@ -620,12 +833,16 @@ class ChemistryProcessor:
 
     @classmethod
     def default_standardization(cls, processor_instance) -> Callable:
-        """Get the default standardization pipeline"""
+        """Get the same conservative single-organic pipeline used by DiptoxPipeline."""
         return cls.create_pipeline(
+            processor_instance.reject_dummy_atoms,
+            processor_instance.remove_isotopes,
             processor_instance.remove_hydrogens,
-            processor_instance.remove_stereochemistry,
             lambda mol: processor_instance.remove_salts(mol),
+            processor_instance.remove_solvents,
+            lambda mol: processor_instance.remove_mixtures(mol, keep_largest=False),
             processor_instance.remove_inorganic,
+            processor_instance.reject_radicals,
             processor_instance.neutralize_charges,
-            processor_instance.effective_atom,
+            processor_instance.collapse_identical_components,
         )

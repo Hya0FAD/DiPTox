@@ -1,22 +1,23 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "diptox"
-version = "1.0.6"
+version = "1.1.0"
 description = "Data Integration and Processing for Computational Toxicology"
-authors = [{name = "Guijia Bi", email = "gjbi@mail.dlut.edu.cn"}]
-license = {text = "Apache-2.0"}
 readme = "README.md"
 requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Guijia Bi", email = "gjbi@mail.dlut.edu.cn"},
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Healthcare Industry",
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -25,17 +26,25 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "requests",
-    "rdkit>=2023.3",
-    "tqdm",
-    "scipy",
     "openpyxl",
-    "streamlit>=1.0.0"
+    "pandas",
+    "nicegui==2.24.2; python_version < '3.10'",
+    "nicegui>=3.16,<4; python_version >= '3.10'",
+    "rdkit>=2023.3",
+    "requests",
+    "scipy",
+    "tqdm",
 ]
 
+[project.scripts]
+diptox = "diptox.command_line:main"
+diptox-gui = "diptox.cli:run_gui"
+
 [tool.setuptools]
-packages = ["diptox"]
 include-package-data = true
 
-[project.scripts]
-diptox-gui = "diptox.cli:run_gui"
+[tool.setuptools.packages.find]
+include = ["diptox*"]
+
+[tool.setuptools.package-data]
+diptox = ["*.smi", "*.svg"]

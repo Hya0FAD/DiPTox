@@ -22,7 +22,7 @@ class SubstructureSearcher:
         return [
             (idx, Chem.MolFromSmiles(smi))
             for idx, smi in self.df[self.smiles_col].items()
-            if pd.notna(smi)
+            if isinstance(smi, str) and smi.strip()
         ]
 
     @staticmethod

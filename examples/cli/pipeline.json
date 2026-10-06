@@ -1,0 +1,43 @@
+{
+  "schema_version": "1",
+  "input": {
+    "path": "data.csv",
+    "columns": {
+      "smiles": "SMILES",
+      "target": "Value",
+      "unit": "Unit",
+      "id": "ID"
+    }
+  },
+  "steps": [
+    {
+      "op": "preprocess",
+      "params": {
+        "mixture_mode": "reject",
+        "element_policy": "allow_all",
+        "n_jobs": 1
+      }
+    },
+    {
+      "op": "units",
+      "params": {
+        "standard_unit": "mg/L"
+      }
+    },
+    {
+      "op": "deduplicate",
+      "params": {
+        "data_type": "continuous",
+        "method": "auto",
+        "condition_cols": ["Species"]
+      }
+    }
+  ],
+  "output": {
+    "path": "output/clean.csv",
+    "excluded_path": "output/excluded.csv",
+    "report_path": "output/report.json"
+  },
+  "overwrite": false,
+  "strict": false
+}

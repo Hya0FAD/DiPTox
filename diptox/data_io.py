@@ -2,12 +2,33 @@
 import pandas as pd
 from typing import Union, List, Optional, Dict, Any
 import os
+import tempfile
+import json
 from .logger import log_manager
 logger = log_manager.get_logger(__name__)
 
 
 class DataHandler:
     """Data loading and saving"""
+
+    # These names assert a source structure; derived columns such as
+    # "Original Canonical SMILES" are audited only when explicitly mapped.
+    SDF_SMILES_PROPERTIES = frozenset({
+        'smiles', 'smile', 'smi', 'smiles_string', 'smiles string',
+        'isomeric_smiles', 'isomeric smiles', 'isomericsmiles',
+    })
+
+    @staticmethod
+    def _sdf_structure_key(mol) -> str:
+        """Compare molecular identity without maps or ordinary explicit H."""
+        from rdkit import Chem
+
+        comparable = Chem.Mol(mol)
+        for atom in comparable.GetAtoms():
+            atom.SetAtomMapNum(0)
+        comparable = Chem.RemoveHs(comparable)
+        Chem.AssignStereochemistry(comparable, cleanIt=True, force=True)
+        return Chem.MolToSmiles(comparable, canonical=True, isomericSmiles=True)
 
     @staticmethod
     def load_data(input_data: Union[str, List[str], pd.DataFrame],
@@ -18,6 +39,7 @@ class DataHandler:
                   unit_col: Optional[str] = None,
                   inchikey_col: Optional[str] = None,
                   id_col: Optional[str] = None,
+                  interactive: bool = True,
                   **kwargs) -> pd.DataFrame:
         """
         Unified data loading entry point
@@ -32,10 +54,11 @@ class DataHandler:
         :param unit_col: Unit for target value column name (optional)
         :param inchikey_col: Inchikey column name (optional)
         :param id_col: SMI file's SMILES ID column name (optional)
+        :param interactive: Whether missing file choices may prompt on stdin.
         """
         if isinstance(input_data, str):
             return DataHandler._load_from_file(input_data, smiles_col, cas_col, name_col, target_col, unit_col,
-                                               inchikey_col, id_col, **kwargs)
+                                               inchikey_col, id_col, interactive=interactive, **kwargs)
         elif isinstance(input_data, list):
             return DataHandler._load_from_list(input_data, smiles_col)
         elif isinstance(input_data, pd.DataFrame):
@@ -52,6 +75,7 @@ class DataHandler:
                         unit_col: Optional[str] = None,
                         inchikey_col: Optional[str] = None,
                         id_col: Optional[str] = None,
+                        interactive: bool = True,
                         **kwargs) -> pd.DataFrame:
         """Load data from file"""
         if not os.path.exists(file_path):
@@ -68,17 +92,23 @@ class DataHandler:
             'id_col': id_col
         })
         df = None
-        if file_path.endswith('.csv'):
+        suffix = os.path.splitext(file_path)[1].lower()
+        if suffix == '.csv':
             df = pd.read_csv(file_path, **kwargs)
-        elif file_path.endswith(('.xls', '.xlsx')):
+        elif suffix in {'.xls', '.xlsx'}:
             if 'sheet_name' in kwargs:
                 df = pd.read_excel(file_path, **kwargs)
             else:
-                xls = pd.ExcelFile(file_path)
-                sheet_names = xls.sheet_names
+                with pd.ExcelFile(file_path) as xls:
+                    sheet_names = xls.sheet_names
                 if len(sheet_names) == 1:
                     df = pd.read_excel(file_path, sheet_name=sheet_names[0], **kwargs)
                 else:
+                    if not interactive:
+                        raise ValueError(
+                            "Multiple sheets found. Provide sheet_name. "
+                            f"Available sheets: {sheet_names}"
+                        )
                     print("The file contains multiple sheets. Please select one:")
                     for i, sheet_name in enumerate(sheet_names):
                         print(f"{i + 1}: {sheet_name}")
@@ -98,11 +128,11 @@ class DataHandler:
                                 break
                             else:
                                 print(f"Invalid sheet name. Please enter a valid sheet name or number.")
-        elif file_path.endswith('.txt'):
+        elif suffix == '.txt':
             df = pd.read_csv(file_path, sep='\t', **kwargs)
-        elif file_path.endswith(('.sdf', '.mol')):
+        elif suffix in {'.sdf', '.mol'}:
             df = DataHandler._load_sdf(file_path=file_path, **loader_kwargs)
-        elif file_path.endswith('.smi'):
+        elif suffix == '.smi':
             df = DataHandler._load_smi(file_path=file_path, **loader_kwargs)
         else:
             logger.error("Only the .csv/.xlsx/.xls/.txt/.sdf/.mol/.smi file format is supported")
@@ -164,17 +194,50 @@ class DataHandler:
 
         def parse_mol_supplier(supplier):
             data_rows = []
-            for mol in supplier:
+            for record_number, mol in enumerate(supplier, 1):
                 if mol is None:
+                    data_rows.append({effective_smiles_col: None,
+                                      'Input Record': record_number,
+                                      'Structure Reliability': 'Invalid',
+                                      'Import Error': 'SDF record could not be parsed or sanitized'})
                     continue
                 try:
                     props = mol.GetPropsAsDict()
                     smi = Chem.MolToSmiles(mol, isomericSmiles=True)
-                    if effective_smiles_col not in props:
-                        props[effective_smiles_col] = smi
+                    declared = {
+                        name: mol.GetProp(name) for name in mol.GetPropNames()
+                        if name == effective_smiles_col
+                        or name.strip().casefold() in DataHandler.SDF_SMILES_PROPERTIES
+                    }
+                    props['SDF Declared SMILES'] = json.dumps(declared, ensure_ascii=False, sort_keys=True)
+                    props[effective_smiles_col] = smi
+                    props['Input Record'] = record_number
+                    problems = []
+                    if mol.GetNumAtoms() == 0:
+                        props['Structure Reliability'] = 'Invalid'
+                        problems.append('SDF record contains no atoms')
+                    else:
+                        block_key = DataHandler._sdf_structure_key(mol)
+                        parser = Chem.SmilesParserParams()
+                        parser.removeHs = False
+                        for name, value in declared.items():
+                            if not value.strip():
+                                continue
+                            declared_mol = Chem.MolFromSmiles(value, parser)
+                            if declared_mol is None or declared_mol.GetNumAtoms() == 0:
+                                problems.append(f"SDF property {name!r} contains invalid SMILES {value!r}; molblock identity is {block_key!r}")
+                            else:
+                                declared_key = DataHandler._sdf_structure_key(declared_mol)
+                                if declared_key != block_key:
+                                    problems.append(f"SDF property {name!r} conflicts with molblock: declared {declared_key!r}; molblock {block_key!r}")
+                        props['Structure Reliability'] = 'Unreliable' if problems else 'Reliable'
+                    props['Import Error'] = '; '.join(problems) if problems else pd.NA
                     data_rows.append(props)
-                except Exception:
-                    continue
+                except Exception as exc:
+                    data_rows.append({effective_smiles_col: None,
+                                      'Input Record': record_number,
+                                      'Structure Reliability': 'Invalid',
+                                      'Import Error': f'SDF record processing failed: {exc}'})
             return pd.DataFrame(data_rows)
 
         df = None
@@ -210,9 +273,9 @@ class DataHandler:
         id_pos = kwargs.pop('id_pos', None)
 
         try:
-            with open(file_path) as f:
+            with open(file_path, encoding=kwargs.get('encoding', 'utf-8')) as f:
                 first_line = f.readline()
-            sep = '\t' if '\t' in first_line else ' '
+            sep = kwargs.pop('sep', None) or ('\t' if '\t' in first_line else r'\s+')
 
             if 'header' in kwargs:
                 header_infer = kwargs.pop('header')
@@ -277,48 +340,144 @@ class DataHandler:
             raise
 
     @staticmethod
-    def save_data(df: pd.DataFrame, output_path: str, columns: list, smiles_col: str, id_col: Optional[str] = None,):
-        """Save processing results."""
+    def save_data(df: pd.DataFrame, output_path: str, columns: list, smiles_col: str,
+                  id_col: Optional[str] = None, *, interactive: bool = True,
+                  source_smiles_col: Optional[str] = None) -> Optional[str]:
+        """Save results, synchronizing exported source declarations with the SDF graph.
+
+        ``source_smiles_col`` identifies a custom mapped source declaration when
+        ``smiles_col`` selects a derived structure. Original values are archived.
+        """
+        output_path = os.fspath(output_path)
+        suffix = os.path.splitext(output_path)[1].lower()
+        if not interactive and suffix not in {'.csv', '.xls', '.xlsx', '.txt', '.sdf', '.smi'}:
+            raise ValueError("Unsupported output file format. Use CSV, XLS, XLSX, TXT, SDF, or SMI.")
         missing_cols = [col for col in columns if col not in df.columns]
         if missing_cols:
             logger.error(f"Columns {missing_cols} not found in DataFrame")
+            if not interactive:
+                raise KeyError(f"Columns {missing_cols} not found in DataFrame")
 
         directory = os.path.dirname(output_path)
         if directory:
             os.makedirs(directory, exist_ok=True)
 
-        original_output_path = output_path
         while True:
             try:
-                current_output_path = original_output_path
-                if output_path.endswith('.csv'):
+                if suffix == '.csv':
                     df[columns].to_csv(output_path, index=False, encoding='utf-8')
-                elif output_path.endswith(('.xls', '.xlsx')):
+                elif suffix in {'.xls', '.xlsx'}:
                     df[columns].to_excel(output_path, index=False)
-                elif output_path.endswith('.txt'):
+                elif suffix == '.txt':
                     df[columns].to_csv(output_path, index=False, sep='\t', encoding='utf-8')
-                elif output_path.endswith('.sdf'):
+                elif suffix == '.sdf':
                     from rdkit import Chem
                     from rdkit.Chem import PandasTools
-                    if 'ROMol' not in df.columns:
-                        df['ROMol'] = df[smiles_col].apply(
-                            lambda s: Chem.MolFromSmiles(str(s)))
+                    export_df = df.copy()
+                    parser = Chem.SmilesParserParams()
+                    parser.removeHs = False
+                    molecules, statuses = [], []
+                    declarations = {
+                        name: [] for name in columns
+                        if isinstance(name, str) and (
+                            name == source_smiles_col
+                            or name.strip().casefold() in DataHandler.SDF_SMILES_PROPERTIES
+                        )
+                    }
+                    source_archives = []
+                    archived_sources = False
+                    for _, row in export_df.iterrows():
+                        smiles = row[smiles_col]
+                        mol = Chem.MolFromSmiles(smiles, parser) if isinstance(smiles, str) and smiles.strip() else None
+                        if mol is None or mol.GetNumAtoms() == 0:
+                            molecules.append(Chem.Mol())
+                            statuses.append('Invalid structure placeholder')
+                        else:
+                            molecules.append(mol)
+                            statuses.append('Written')
+                        changed = {}
+                        selected_key = DataHandler._sdf_structure_key(mol) if mol is not None and mol.GetNumAtoms() else None
+                        for name, values in declarations.items():
+                            value = row[name]
+                            missing_value = pd.api.types.is_scalar(value) and pd.isna(value)
+                            if selected_key is not None and not missing_value and str(value).strip():
+                                declared_mol = Chem.MolFromSmiles(value, parser) if isinstance(value, str) else None
+                                declared_key = DataHandler._sdf_structure_key(declared_mol) if declared_mol is not None else None
+                                if declared_key != selected_key:
+                                    changed[name] = str(value)
+                                    value = Chem.MolToSmiles(mol, canonical=True, isomericSmiles=True)
+                            values.append(value)
+                        source_archive = row.get('SDF Source SMILES', pd.NA)
+                        original_declarations = []
+                        declared_json = row.get('SDF Declared SMILES')
+                        if isinstance(declared_json, str):
+                            try:
+                                declared_sources = json.loads(declared_json)
+                            except (TypeError, ValueError):
+                                declared_sources = None
+                            if isinstance(declared_sources, dict):
+                                original_declarations = [
+                                    (name, value) for name, value in declared_sources.items()
+                                    if isinstance(name, str) and isinstance(value, str) and value.strip()
+                                ]
+                        source_values = [*original_declarations, *changed.items()]
+                        if source_values:
+                            archived_sources = True
+                            archive = {}
+                            missing_archive = pd.api.types.is_scalar(source_archive) and pd.isna(source_archive)
+                            if not missing_archive and str(source_archive).strip():
+                                try:
+                                    archive = json.loads(str(source_archive))
+                                except (TypeError, ValueError):
+                                    archive = {'_previous': str(source_archive)}
+                                if not isinstance(archive, dict):
+                                    archive = {'_previous': archive}
+                            for name, value in source_values:
+                                if name not in archive:
+                                    archive[name] = value
+                                elif archive[name] != value:
+                                    previous = archive[name] if isinstance(archive[name], list) else [archive[name]]
+                                    archive[name] = previous if value in previous else [*previous, value]
+                            source_archive = json.dumps(archive, ensure_ascii=False, sort_keys=True)
+                        source_archives.append(source_archive)
+                    export_df['ROMol'] = molecules
+                    export_df['SDF Export Status'] = statuses
+                    for name, values in declarations.items():
+                        export_df[name] = values
+                    if archived_sources:
+                        export_df['SDF Source SMILES'] = source_archives
                     other = [c for c in columns if c != 'ROMol']
-                    columns = ['ROMol'] + other
-                    PandasTools.WriteSDF(df[columns], output_path, molColName='ROMol', properties=other)
-                elif output_path.endswith('.smi'):
-                    if id_col is None:
+                    if 'SDF Export Status' not in other:
+                        other.append('SDF Export Status')
+                    if archived_sources and 'SDF Source SMILES' not in other:
+                        other.append('SDF Source SMILES')
+                    descriptor, temporary = tempfile.mkstemp(
+                        prefix='.diptox-', suffix='.sdf', dir=os.path.abspath(directory or '.')
+                    )
+                    os.close(descriptor)
+                    try:
+                        PandasTools.WriteSDF(export_df[['ROMol'] + other], temporary,
+                                             molColName='ROMol', properties=other)
+                        os.replace(temporary, output_path)
+                    finally:
+                        if os.path.exists(temporary):
+                            os.remove(temporary)
+                elif suffix == '.smi':
+                    if id_col is None or id_col not in columns or id_col not in df:
                         df[smiles_col].to_csv(output_path, sep='\t', header=True, index=False)
                     else:
                         df[[smiles_col, id_col]].to_csv(output_path, sep='\t', header=True, index=False)
                 else:
                     logger.warning(f"Unsupported file format. The file will be saved as csv by default.")
                     output_path += '.csv'
+                    suffix = '.csv'
                     df[columns].to_csv(output_path, index=False, encoding='utf-8')
-                logger.info(f"File saved successfully: {current_output_path}")
-                break
+                logger.info(f"File saved successfully: {output_path}")
+                return output_path
             except (PermissionError, IOError, OSError) as e:
                 logger.error(f"Unable to save file: {str(e)}")
+                if not interactive:
+                    raise
                 choice = input("Do you want to save again? (Y/N): ").strip().lower()
                 if choice in {'y', 'yes'}:
                     continue
@@ -327,4 +486,6 @@ class DataHandler:
                     break
             except Exception as e:
                 logger.error(f"Unknown error: {str(e)}")
+                if not interactive:
+                    raise
                 break
