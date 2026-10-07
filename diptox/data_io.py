@@ -365,11 +365,21 @@ class DataHandler:
         while True:
             try:
                 if suffix == '.csv':
-                    df[columns].to_csv(output_path, index=False, encoding='utf-8')
+                    from .unit_labels import excel_unit_label
+                    export_frame = df[columns].apply(lambda column: column.map(excel_unit_label))
+                    export_frame.to_csv(output_path, index=False, encoding='utf-8-sig')
                 elif suffix in {'.xls', '.xlsx'}:
-                    df[columns].to_excel(output_path, index=False)
+                    # Explicit text cells prevent Excel interpreting strings as formulas.
+                    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                        df[columns].to_excel(writer, index=False)
+                        for row in writer.sheets['Sheet1'].iter_rows():
+                            for cell in row:
+                                if isinstance(cell.value, str):
+                                    cell.data_type = 's'
                 elif suffix == '.txt':
-                    df[columns].to_csv(output_path, index=False, sep='\t', encoding='utf-8')
+                    from .unit_labels import excel_unit_label
+                    export_frame = df[columns].apply(lambda column: column.map(excel_unit_label))
+                    export_frame.to_csv(output_path, index=False, sep='\t', encoding='utf-8-sig')
                 elif suffix == '.sdf':
                     from rdkit import Chem
                     from rdkit.Chem import PandasTools

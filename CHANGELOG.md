@@ -5,10 +5,26 @@
 记录各版本的重要功能、兼容性变化及影响使用结果的修正。
 Highlights of features, compatibility changes, and corrections that affect results.
 
-1.1.0 尚未正式发布，当前更新均归入该版本。
-Version 1.1.0 is in preparation; all current changes belong to this unreleased version.
-
 ## 中文
+
+### 1.1.3
+
+- **计算精度修复**：移除单位换算后按原始有效数字进行的中间舍入，目标列和条件列的换算、log/-log 及后续聚合保留浮点精度。旧结果需从原始数值和所选分子量重新计算。例如 0.05 mg/L、MW 336.231 的 pNOEC 从错误的 7.0 修正为约 6.827667748。
+- **批量取值合并**：GUI 新增 Multiple groups (JSON) 模式；API 的 `merge_column_values` 新增 `groups` 参数，CLI 新增 `--groups`，支持多组原值一次归类到一个新列。
+- **规则校验与追溯**：同时匹配原始值，避免级联替换；冲突规则在修改前报错，未匹配值和全部行保留，支持一次撤销。
+- **使用示例**：新增生命阶段五组分类 JSON 和 `UseExample.py` 的 `use_case_9()`。
+
+### 1.1.2
+
+- **条件列转换**：API、GUI、CLI 可指定数值列和单位列，先换算单位，再可选做 log10 / -log10；生成的新列可作为去重条件，异常行进入排除表，支持撤销。
+- **列调整与取值合并**：新增独立列调整页面，位于去重上方，集中取值筛选和合并；API、GUI、CLI 可把多个值合并为 `other` 等标签，保留原列和全部行，新列可用于去重，支持撤销。
+- **界面布局**：Columns to transform 使用两行等宽布局，窄屏自动改为单列。
+
+### 1.1.1
+
+- **按列取值筛选**：API、GUI 和 CLI 支持查看列内全部取值及计数，按互斥的保留/去除模式筛选；未选值全保留，筛除行进入排除记录，支持撤销。
+- **导出修复**：GUI 推荐列随处理更新，包含最终目标值、单位及去重条件；Excel 文本单元格和 CSV/TXT 数学减号避免负对数单位被识别为公式。
+- **下载命名**：GUI 导出页可自定义文件名，扩展名随导出格式调整，排除记录使用相同名称加 `-excluded.csv`。
 
 ### 1.1.0
 
@@ -45,7 +61,26 @@ Version 1.1.0 is in preparation; all current changes belong to this unreleased v
 
 ## English
 
-### 1.1.0 (Unreleased)
+### 1.1.3
+
+- **Numeric precision fix**: Removed intermediate rounding to source significant figures after unit conversion. Target/condition conversions, log transforms and downstream aggregation retain floating-point precision. Existing results must be recalculated from original values and the chosen molecular-weight basis. For 0.05 mg/L and MW 336.231, pNOEC is approximately 6.827667748 rather than 7.0.
+- **Batch value merging**: Added GUI Multiple groups (JSON) mode, the API `merge_column_values(groups=...)` parameter, and CLI `--groups` to apply multiple category mappings into one new column.
+- **Validation and traceability**: Rules match original values simultaneously without cascading. Conflicts are rejected before mutation; unmatched values and all rows are preserved, with single-step undo.
+- **Examples**: Added a five-group life-stage JSON example and `use_case_9()` in `UseExample.py`.
+
+### 1.1.2
+
+- **Condition transformations**: API, GUI and CLI accept independent value/unit columns, convert units before optional log10/-log10, and expose generated columns for grouping. Invalid rows are audited; undo restores the operation.
+- **Column adjustments and merging**: A dedicated page above Deduplication groups filtering and merging. API, GUI and CLI merge selected values into a label such as `other`, preserving source columns and all rows. Generated columns support grouping and undo.
+- **Interface layout**: Columns to transform uses two rows of equally sized fields and switches to one column on narrow screens.
+
+### 1.1.1
+
+- **Column-value filtering**: API, GUI and CLI list distinct values/counts and support exclusive keep/remove modes. Empty selection retains all rows; removed rows are audited and filters can be undone.
+- **Export fixes**: Recommended GUI columns follow final targets, units and deduplication conditions. Explicit XLSX text cells and mathematical minus signs in CSV/TXT prevent negative-log units from being interpreted as formulas.
+- **Download names**: The GUI export page accepts a custom file name, supplies the selected format's extension, and names exclusions with the same base plus `-excluded.csv`.
+
+### 1.1.0
 
 - **Python 3.8 compatibility**: Python 3.8/3.9 automatically installs NiceGUI 2.24.2; Python 3.10+ continues to use NiceGUI 3.16+. Both share the current interface and processing features, with adapters for uploads, background threads, type annotations, CLI boolean flags, and nullable numeric conversions on pandas 2.0.
 - **New graphical interface**: A local NiceGUI browser interface preserves settings across pages. Long-running operations run in the background and update results when successful.

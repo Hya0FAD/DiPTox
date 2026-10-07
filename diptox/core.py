@@ -541,6 +541,9 @@ class DiptoxPipeline:
         self.name_col = name_col
         self.target_col = target_col
         self.unit_col = unit_col
+        if unit_col and unit_col in self.df:
+            from .unit_labels import normalize_unit_label
+            self.df[unit_col] = self.df[unit_col].map(normalize_unit_label).astype('string')
         self.inchikey_col = inchikey_col
         self.id_col = id_col
         self._preprocess_key = 0
@@ -1280,6 +1283,52 @@ class DiptoxPipeline:
             logger.error(f"Unit standardization failed: {e}")
             raise
 
+    @_run_on_main_process_only
+    @check_data_loaded
+    def transform_column(self, value_col: str, unit_col: str,
+                         standard_unit: Optional[str] = None,
+                         log_transform: str = 'None', conversion_rules=None,
+                         molecular_weight_source=None, molecular_weight_col=None) -> Tuple[str, str]:
+        """Create converted condition columns, preserving primary target mappings.
+
+        Convert units first, then optionally log10/-log10. Invalid rows are
+        excluded with reasons. Returns the generated value/unit column names.
+        Existing output columns must be undone before repeating an operation.
+        """
+        from .column_transform import transform_frame
+        if molecular_weight_source not in (None, 'original', 'standardized'):
+            raise ValueError('Choose original or standardized molecular-weight source.')
+        if molecular_weight_source == 'standardized' and not self._preprocess_key:
+            raise ValueError('Standardized molecular weight requires preprocessing first.')
+        resolve = lambda column: self._input_column_aliases.get(column, column)
+        value_col, unit_col = resolve(value_col), resolve(unit_col)
+        mw_col = resolve(molecular_weight_col)
+        smiles_col = None
+        if not mw_col and molecular_weight_source == 'original':
+            if self._preprocess_key and 'Original Molecular Weight' in self.df:
+                mw_col = 'Original Molecular Weight'
+            else:
+                smiles_col = self.smiles_col
+        elif not mw_col and molecular_weight_source == 'standardized':
+            mw_col = 'Standardized Molecular Weight'
+        if value_col in self.df.attrs.get('_diptox_stale_targets', []):
+            raise ValueError('Select original values; this column uses an outdated molecular weight.')
+        result, new_value, new_unit, valid, reasons = transform_frame(
+            self.df, value_col, unit_col, standard_unit, log_transform,
+            conversion_rules, smiles_col, mw_col)
+        self._save_checkpoint()
+        before = self.df.copy()
+        excluded = result.loc[~valid].copy()
+        if not excluded.empty:
+            excluded['Source DataFrame Index'] = self._source_labels(excluded.index)
+            excluded['Excluded At'] = 'Column transformation'
+            excluded['Exclusion Reason'] = value_col + ': ' + reasons.loc[~valid].astype(str)
+            self._merge_excluded_records(excluded, refresh_frame=excluded)
+        self.df = result.loc[valid].copy()
+        self._record_step('Column transformation', before, self.df,
+                          f'{value_col} / {unit_col} -> {standard_unit}; {log_transform}')
+        return new_value, new_unit
+
     @staticmethod
     def _select_standard_unit_interactively(unique_units: List[str]) -> Optional[str]:
         """Handles the interactive command-line prompt for selecting a standard unit."""
@@ -1424,6 +1473,8 @@ class DiptoxPipeline:
 
         if self.deduplicator.data_type != 'smiles' and self.target_col in self.df.attrs.get('_diptox_stale_targets', []):
             raise ValueError("The target uses an outdated standardized molecular weight. Reconvert from the original concentrations before deduplication.")
+        if set(self.deduplicator.condition_cols or []) & set(self.df.attrs.get('_diptox_stale_targets', [])):
+            raise ValueError('A condition column uses an outdated standardized molecular weight. Reconvert its original values first.')
 
         needs_standardization = False
         if self.target_col and self.unit_col and self.unit_col in self.df.columns:
@@ -1749,6 +1800,62 @@ class DiptoxPipeline:
 
         logger.info(f"InChI calculation complete. Generated {count} InChI strings.")
         self._record_step("InChI Calculation", None, self.df, f"Calculated {count} InChIs")
+
+    @_run_on_main_process_only
+    @check_data_loaded
+    def get_column_values(self, column: str) -> List[Dict[str, Any]]:
+        """List distinct current values and row counts; None represents missing cells."""
+        from .value_filter import column_values
+        return column_values(self.df, column)
+
+    @_run_on_main_process_only
+    @check_data_loaded
+    def merge_column_values(self, column: str, values=None, replacement: str = 'other',
+                            output_column: Optional[str] = None, groups=None) -> str:
+        """Merge selected values into a text label in a new grouping column.
+
+        groups accepts [{"values": [...], "replacement": "label"}, ...].
+        All groups match original values simultaneously, without cascading.
+        Returns the output name; empty selections return the unchanged source
+        name. Rows and original columns are preserved. Supports undo.
+        """
+        from .value_filter import merge_values
+        column = self._input_column_aliases.get(column, column)
+        result, output, count = merge_values(self.df, column, values, replacement, output_column, groups)
+        if output == column:
+            return column
+        self._save_checkpoint()
+        before = self.df
+        self.df = result
+        self._record_step('Merge Column Values', before, self.df,
+                          f'{column} -> {output} | Values: {values!r} | Label: {replacement!r} | Groups: {groups!r} | Rows: {count}')
+        return output
+
+    @_run_on_main_process_only
+    @check_data_loaded
+    def filter_by_values(self, column: str, values=None, mode: str = "keep") -> None:
+        """Keep or remove rows matching selected values in one column.
+
+        Empty/omitted values retain all rows in either mode. None inside values
+        selects missing cells; strings and numbers are matched separately.
+        Apply this method successively for multiple columns (intersection).
+        Removed rows are audited and the operation can be undone.
+        """
+        from .value_filter import selection_mask
+        mask = selection_mask(self.df, column, values, mode)
+        if values is None or len(values) == 0:
+            return
+        self._save_checkpoint()
+        before = self.df.copy()
+        excluded = before.loc[~mask].copy()
+        if not excluded.empty:
+            excluded['Source DataFrame Index'] = self._source_labels(excluded.index)
+            excluded['Excluded At'] = 'Column value filter'
+            excluded['Exclusion Reason'] = f"Column {column!r}: {mode} selected values {values!r}"
+            self._merge_excluded_records(excluded, refresh_frame=excluded)
+        self.df = self.df.loc[mask].copy()
+        self._record_step('Filter Column Values', before, self.df,
+                          f"Column: {column} | Mode: {mode} | Values: {values!r} | Removed: {len(excluded)}")
 
     @_run_on_main_process_only
     @check_data_loaded

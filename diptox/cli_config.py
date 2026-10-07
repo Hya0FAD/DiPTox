@@ -99,6 +99,13 @@ PARAM_SPECS = {
         name: {"type": ["integer", "null"], "minimum": 0, "default": None}
         for name in ("min_heavy_atoms", "max_heavy_atoms", "min_total_atoms", "max_total_atoms")
     },
+    "filter-values": {
+        "column": _STRING,
+        "mode": {"type": "string", "enum": ["keep", "remove"], "default": "keep"},
+        "values": {"type": "array", "default": [],
+                   "items": {"type": ["string", "number", "boolean", "null"]},
+                   "description": "JSON array of values; [] keeps all rows, null selects missing cells."},
+    },
     "inchi": {},
     "enrich": {
         "sources": {"type": "array", "minItems": 1, "uniqueItems": True,
@@ -119,9 +126,30 @@ PARAM_SPECS = {
     },
 }
 
+PARAM_SPECS['transform-column'] = {
+    **PARAM_SPECS['units'],
+    'value_col': _STRING,
+    'unit_col': _STRING,
+    'standard_unit': {'type': ['string', 'null'], 'minLength': 1, 'default': None},
+    'log_transform': PARAM_SPECS['deduplicate']['log_transform'],
+}
+
+PARAM_SPECS['merge-values'] = {
+    'groups': {'type': ['array', 'null'], 'default': None,
+               'items': {'type': 'object', 'additionalProperties': False,
+                         'required': ['values', 'replacement'],
+                         'properties': {'values': {'type': 'array', 'minItems': 1, 'items': {'type': ['string', 'number', 'boolean', 'null']}},
+                                        'replacement': {'type': 'string', 'minLength': 1}}}},
+    'column': _STRING,
+    'values': PARAM_SPECS['filter-values']['values'],
+    'replacement': {'type': 'string', 'minLength': 1, 'default': 'other'},
+    'output_column': {'type': ['string', 'null'], 'minLength': 1, 'default': None},
+}
+
 REQUIRED_PARAMS = {
     op: {"units": ("standard_unit",), "search": ("query_pattern",),
-         "enrich": ("request",)}.get(op, ())
+         "enrich": ("request",), "filter-values": ("column",),
+         "transform-column": ("value_col", "unit_col"), "merge-values": ("column",)}.get(op, ())
     for op in PARAM_SPECS
 }
 
@@ -302,7 +330,7 @@ def normalize_config(raw: dict, base_dir: Path) -> dict:
                 _invalid(f"{field}.priority", "is only supported by the priority method")
             if params["log_transform"] != "None" and data_type != "continuous":
                 _invalid(f"{field}.log_transform", "requires continuous data")
-        if op == "units":
+        if op in {"units", "transform-column"}:
             seen = set()
             for rule in params["conversion_rules"]:
                 key = (rule["from"], rule["to"])
@@ -317,7 +345,7 @@ def normalize_config(raw: dict, base_dir: Path) -> dict:
                 lower, upper = params[f"min_{kind}_atoms"], params[f"max_{kind}_atoms"]
                 if lower is not None and upper is not None and lower > upper:
                     _invalid(field, f"min_{kind}_atoms must not exceed max_{kind}_atoms")
-        required_roles = (["target", "unit"] if op == "units" else
+        required_roles = ([] if op in {"filter-values", "transform-column", "merge-values"} else ["target", "unit"] if op == "units" else
                           params["send"] if op == "enrich" else ["smiles"])
         if op == "deduplicate" and params["data_type"] != "smiles":
             required_roles.append("target")
@@ -347,7 +375,7 @@ def schema_document() -> dict:
     """Return a fresh, serializable discovery document without heavy imports."""
     return deepcopy({
         "schema_version": "1",
-        "commands": ["schema", "inspect", "run", *PARAM_SPECS, "rules"],
+        "commands": ["schema", "inspect", "column-values", "run", *PARAM_SPECS, "rules"],
         "config_schema": {"$schema": "https://json-schema.org/draft/2020-12/schema",
                           **_config_schema()},
         "step_parameters": PARAM_SPECS,

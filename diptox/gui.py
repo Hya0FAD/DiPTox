@@ -11,8 +11,10 @@ import asyncio
 import contextvars
 import copy
 import functools
+import json
 import multiprocessing
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -41,6 +43,7 @@ PAGE_DEFINITIONS = (
     ("preprocess", "Preprocessing", "science"),
     ("web", "Web requests", "language"),
     ("units", "Unit standardization", "straighten"),
+    ("columns", "Column adjustments", "tune"),
     ("deduplicate", "Deduplication", "difference"),
     ("search", "Search & filter", "manage_search"),
     ("export", "Export", "download"),
@@ -260,6 +263,9 @@ class DiptoxWebApp:
         self.state = InterfaceState()
         self.mapping: dict[str, Any] = {}
         self.unit_rule_inputs: dict[tuple[str, str], Any] = {}
+        self._export_selection_mode = 'recommended'
+        self._export_refreshing = False
+        self._column_value_options = []
         self._build()
         self._refresh_data_controls()
         self._build_registration_dialog()
@@ -515,6 +521,7 @@ class DiptoxWebApp:
                 with ui.tab_panel(self.tabs["preprocess"]): self._build_preprocess_page()
                 with ui.tab_panel(self.tabs["web"]): self._build_web_page()
                 with ui.tab_panel(self.tabs["units"]): self._build_unit_page()
+                with ui.tab_panel(self.tabs["columns"]): self._build_column_page()
                 with ui.tab_panel(self.tabs["deduplicate"]): self._build_deduplication_page()
                 with ui.tab_panel(self.tabs["search"]): self._build_search_page()
                 with ui.tab_panel(self.tabs["export"]): self._build_export_page()
@@ -702,6 +709,13 @@ class DiptoxWebApp:
             "Standardize measurement units",
         )
         self.unit_context = ui.label("Load data with target and unit columns to configure this step.").classes("context-strip w-full mb-4")
+        with _work_card('Columns to transform', 'For condition columns, choose a value/unit pair. Conversion runs before base-10 log transformation; original columns are preserved.'):
+            with ui.row().classes('grid-2'):
+                self.unit_scope = ui.select(['Primary target', 'Condition column'], value='Primary target', label='Apply to', on_change=lambda _: self._refresh_data_controls()).props('outlined dense').classes('w-full')
+                self.condition_log = ui.select(['None', 'log10', '-log10'], value='None', label='Condition transformation').props('outlined dense').classes('w-full')
+                self.condition_value = ui.select([], label='Value column').props('outlined dense').classes('w-full')
+                self.condition_unit = ui.select([], label='Unit column', on_change=lambda _: self.unit_rules_refresh.refresh()).props('outlined dense').classes('w-full')
+            ui.label('Leave Standard unit empty to apply only log10 / -log10. Invalid rows enter the exclusion table.').classes('section-copy')
         with _work_card("Conversion target", "Formulas use x for the source value and mw for molecular weight."):
             with ui.row().classes("grid-3"):
                 self.unit_standard = ui.input(
@@ -746,6 +760,11 @@ class DiptoxWebApp:
                 self.unit_run_button = ui.button(
                     "Run unit standardization", icon="swap_horiz", on_click=self._run_unit_standardization,
                 ).props("unelevated no-caps color=primary").classes("primary-action")
+
+    def _build_column_page(self) -> None:
+        self._page_heading('Adjust column values before deduplication')
+        self._build_value_filter()
+        self._build_value_merge()
 
     def _build_deduplication_page(self) -> None:
         self._page_heading(
@@ -793,18 +812,120 @@ class DiptoxWebApp:
                 with ui.row().classes("action-row"):
                     ui.button("Apply filter", icon="filter_alt", on_click=self._run_atom_filter).props("unelevated no-caps color=primary").classes("primary-action")
 
+    def _build_value_filter(self) -> None:
+        with _work_card("Filter by column values", "Select a column to see every distinct value and its row count. No selected values keeps all rows; removed rows enter the exclusion table."):
+            self.value_filter_column = ui.select([], label="Column", on_change=self._value_filter_column_changed).props("outlined dense").classes("w-full")
+            self.value_filter_mode = ui.radio({'keep': 'Keep selected values', 'remove': 'Remove selected values'}, value='keep').props('inline')
+            self.value_filter_values = ui.select([], label="Values", value=[], multiple=True, with_input=True, clearable=True).props("outlined dense use-chips").classes("w-full")
+            self.value_filter_summary = ui.label("Choose a column.").classes("section-copy")
+            ui.button("Apply column filter", icon="filter_alt", on_click=self._run_value_filter).props("unelevated no-caps color=primary")
+
+    def _build_value_merge(self) -> None:
+        with _work_card('Merge column values', 'Combine selected values into one label for grouping. Original columns and all rows are preserved; select the new column under Condition columns.'):
+            self.value_merge_column = ui.select([], label='Column', on_change=self._value_merge_column_changed).props('outlined dense').classes('w-full')
+            self.value_merge_mode = ui.radio({'single': 'One group', 'batch': 'Multiple groups (JSON)'}, value='single').props('inline')
+            self.value_merge_values = ui.select([], label='Values to merge', value=[], multiple=True, with_input=True, clearable=True).props('outlined dense use-chips').classes('w-full')
+            self.value_merge_values.bind_visibility_from(self.value_merge_mode, 'value', value='single')
+            self.value_merge_groups = ui.textarea('Merge rules (JSON array)', placeholder='[{"values": ["Embryo", "Egg"], "replacement": "Embryonic"},\n {"values": ["Larva", "Fry"], "replacement": "Larval / post hatch"}]').props('outlined autogrow input-style="font-family:monospace"').classes('w-full')
+            self.value_merge_groups.bind_visibility_from(self.value_merge_mode, 'value', value='batch')
+            with ui.row().classes('grid-2'):
+                self.value_merge_label = ui.input('Replace with', value='other').props('outlined dense').classes('w-full')
+                self.value_merge_label.bind_visibility_from(self.value_merge_mode, 'value', value='single')
+                self.value_merge_output = ui.input('New column name (optional)', placeholder='Source column (Merged)').props('outlined dense').classes('w-full')
+            self.value_merge_summary = ui.label('Choose a column. Empty selection makes no changes.').classes('section-copy')
+            ui.label('Batch rules match the original values simultaneously. Unlisted values stay unchanged; conflicting groups are rejected.').classes('section-copy').bind_visibility_from(self.value_merge_mode, 'value', value='batch')
+            ui.button('Apply merge', icon='merge_type', on_click=self._run_value_merge).props('unelevated no-caps color=primary')
+
+    def _value_merge_column_changed(self, _event=None) -> None:
+        column = self.value_merge_column.value
+        self._merge_value_options = (self.pipeline.get_column_values(column)
+                                     if self.pipeline.df is not None and column in self.pipeline.df else [])
+        options = {index: f"{'(missing)' if entry['value'] is None else repr(entry['value'])}  ({entry['count']:,} rows)"
+                   for index, entry in enumerate(self._merge_value_options)}
+        self.value_merge_values.set_options(options, value=[])
+        self.value_merge_summary.set_text(f'{len(options):,} distinct values. Empty selection makes no changes.')
+
+    async def _run_value_merge(self) -> None:
+        if not self._require_data():
+            return
+        column = self.value_merge_column.value
+        if column not in self.pipeline.df:
+            ui.notify('Choose a column.', type='warning')
+            return
+        values = [self._merge_value_options[index]['value'] for index in (self.value_merge_values.value or [])]
+        groups = None
+        if self.value_merge_mode.value == 'batch':
+            try:
+                groups = json.loads(self.value_merge_groups.value or '[]')
+                if not isinstance(groups, list):
+                    raise ValueError('Rules must be a JSON array.')
+                from .value_filter import merge_rules
+                merge_rules(groups=groups)
+            except (ValueError, TypeError) as exc:
+                ui.notify(f'Invalid merge rules: {exc}', type='warning')
+                return
+            values = []
+        if not values and not groups:
+            ui.notify('No values selected; no changes made.', type='info')
+            return
+        replacement = self.value_merge_label.value if groups is None else 'other'
+        if not replacement or not replacement.strip():
+            ui.notify('Enter a replacement label, for example other.', type='warning')
+            return
+        output = _optional_text(self.value_merge_output.value) or column + ' (Merged)'
+
+        def action(pipeline, _progress, _status):
+            pipeline.merge_column_values(column, values, replacement, output, groups=groups)
+
+        await self._run_pipeline_job('Merge column values', action,
+                                     lambda pipeline: f'Created {output}; select it as a deduplication condition.')
+
+    def _value_filter_column_changed(self, _event=None) -> None:
+        column = self.value_filter_column.value
+        if self.pipeline.df is None or column not in self.pipeline.df.columns:
+            self._column_value_options = []
+        else:
+            self._column_value_options = self.pipeline.get_column_values(column)
+        options = {
+            index: f"{'(missing)' if entry['value'] is None else repr(entry['value'])}  ({entry['count']:,} rows)"
+            for index, entry in enumerate(self._column_value_options)
+        }
+        self.value_filter_values.set_options(options, value=[])
+        self.value_filter_summary.set_text(f"{len(options):,} distinct values. Empty selection keeps all rows.")
+
+    async def _run_value_filter(self) -> None:
+        if not self._require_data():
+            return
+        column = self.value_filter_column.value
+        if column not in self.pipeline.df.columns:
+            ui.notify("Choose a column.", type="warning")
+            return
+        values = [self._column_value_options[index]['value'] for index in (self.value_filter_values.value or [])]
+        if not values:
+            ui.notify("No values selected; all rows are retained.", type="info")
+            return
+        mode = self.value_filter_mode.value
+
+        def action(pipeline, _progress, _status):
+            pipeline.filter_by_values(column, values, mode)
+
+        await self._run_pipeline_job("Column value filter", action,
+                                     lambda pipeline: f"Filter complete: {len(pipeline.df):,} records remain.")
+
     def _build_export_page(self) -> None:
         self._page_heading(
             "Export modeling-ready data",
         )
         with _work_card("Processed dataset", "Recommended columns preserve identifiers, standardized structures, targets and audit fields."):
             with ui.row().classes("items-end gap-4 w-full"):
+                self.export_filename = ui.input("File name", value="diptox-processed", placeholder="My dataset").props("outlined dense").classes("min-w-64")
+                self.export_filename.tooltip("The selected format determines the extension. Excluded records use the same name with -excluded.csv.")
                 self.export_format = ui.select(["csv", "xlsx", "txt", "sdf", "smi"], label="Format", value="csv").props("outlined dense").classes("w-40")
                 with ui.row().classes("gap-1"):
                     ui.button("Recommended", on_click=self._select_recommended_columns).props("flat no-caps color=primary")
                     ui.button("Select all", on_click=self._select_all_columns).props("flat no-caps color=primary")
-                    ui.button("Clear", on_click=lambda: self.export_columns.set_value([])).props("flat no-caps color=secondary")
-            self.export_columns = ui.select([], label="Columns", value=[], multiple=True, with_input=True, clearable=True).props("outlined dense use-chips options-dense").classes("w-full")
+                    ui.button("Clear", on_click=self._clear_export_columns).props("flat no-caps color=secondary")
+            self.export_columns = ui.select([], label="Columns", value=[], multiple=True, with_input=True, clearable=True, on_change=self._export_columns_changed).props("outlined dense use-chips options-dense").classes("w-full")
             with ui.row().classes("action-row"):
                 ui.button("Download results", icon="download", on_click=self._export_results).props("unelevated no-caps color=primary").classes("primary-action")
         with _work_card("Excluded records", "Includes invalid structures from preprocessing and records excluded during deduplication."):
@@ -1191,9 +1312,10 @@ class DiptoxWebApp:
 
     def _detected_units(self) -> list[str]:
         pipeline = self.pipeline
-        if pipeline.df is None or not pipeline.unit_col or pipeline.unit_col not in pipeline.df.columns:
+        column = self.condition_unit.value if self.unit_scope.value == 'Condition column' else pipeline.unit_col
+        if pipeline.df is None or not column or column not in pipeline.df.columns:
             return []
-        return [str(value) for value in pipeline.df[pipeline.unit_col].dropna().unique() if str(value).strip()]
+        return [str(value) for value in pipeline.df[column].dropna().unique() if str(value).strip()]
 
     def _capture_unit_rules(self) -> None:
         for key, entry in self.unit_rule_inputs.items():
@@ -1214,7 +1336,11 @@ class DiptoxWebApp:
         if not self._require_data():
             return
         standard = _optional_text(self.unit_standard.value)
-        if not standard:
+        condition = self.unit_scope.value == 'Condition column'
+        if condition and (not self.condition_value.value or not self.condition_unit.value):
+            ui.notify('Choose a value column and its unit column.', type='warning')
+            return
+        if not standard and not (condition and self.condition_log.value != 'None'):
             ui.notify("Choose or enter a standard unit.", type="warning")
             return
         self._capture_unit_rules()
@@ -1228,13 +1354,16 @@ class DiptoxWebApp:
 
         def action(pipeline: DiptoxPipeline, _progress: Callable, status: Callable) -> None:
             status("Applying unit conversions")
-            pipeline.standardize_units(
+            operation = pipeline.transform_column if condition else pipeline.standardize_units
+            extra = dict(value_col=self.condition_value.value, unit_col=self.condition_unit.value,
+                         log_transform=self.condition_log.value) if condition else {}
+            operation(
                 standard_unit=standard, conversion_rules=rules, molecular_weight_source=mw_source,
-                molecular_weight_col=mw_column,
+                molecular_weight_col=mw_column, **extra,
             )
         await self._run_pipeline_job(
             "Unit standardization", action,
-            lambda pipeline: f"Created standardized target column: {pipeline.target_col}",
+            lambda pipeline: 'Condition columns created; select them under deduplication conditions.' if condition else f"Created standardized target column: {pipeline.target_col}",
         )
 
     def _dedup_type_changed(self, _event: Any = None) -> None:
@@ -1307,19 +1436,44 @@ class DiptoxWebApp:
         if pipeline.df is None:
             return []
         preferred = [
+            *pipeline.df.attrs.get('_diptox_merged_columns', []),
+            *pipeline.df.attrs.get('_diptox_condition_columns', {}).keys(),
+            *pipeline.df.attrs.get('_diptox_condition_columns', {}).values(),
             pipeline.id_col, pipeline.name_col, pipeline.cas_col, "Is Valid", "Standardization Status",
             pipeline.smiles_col, "Canonical SMILES", pipeline.target_col, pipeline.unit_col,
-            "Unit Conversion Status", "Deduplication Record Count", "Structure Changed",
+            *((pipeline._current_dedup_config or {}).get('condition_cols') or []),
+            "Unit Conversion Status", "Deduplication Strategy", "Deduplication Record Count",
+            "Deduplication Source Rows", "Deduplication Input Values", "Structure Changed",
             "Is Multi-Component", "Final Contains Metal", "InChI",
         ]
         return [column for column in dict.fromkeys(preferred) if column and column in pipeline.df.columns]
 
     def _select_recommended_columns(self) -> None:
-        self.export_columns.set_value(self._recommended_columns())
+        self._export_selection_mode = 'recommended'
+        self._set_export_columns(self._recommended_columns())
+
+    def _export_columns_changed(self, _event=None) -> None:
+        if not self._export_refreshing:
+            self._export_selection_mode = 'custom'
+
+    def _set_export_columns(self, values, options=None) -> None:
+        self._export_refreshing = True
+        try:
+            if options is None:
+                self.export_columns.set_value(values)
+            else:
+                self.export_columns.set_options(options, value=values)
+        finally:
+            self._export_refreshing = False
+
+    def _clear_export_columns(self) -> None:
+        self._export_selection_mode = 'custom'
+        self._set_export_columns([])
 
     def _select_all_columns(self) -> None:
         columns = list(map(str, self.pipeline.df.columns)) if self.pipeline.df is not None else []
-        self.export_columns.set_value(columns)
+        self._export_selection_mode = 'all'
+        self._set_export_columns(columns)
 
     @staticmethod
     def _temporary_export_path(stem: str, extension: str) -> Path:
@@ -1335,6 +1489,11 @@ class DiptoxWebApp:
             ui.notify("Select at least one column.", type="warning")
             return
         extension = self.export_format.value or "csv"
+        try:
+            filename = self._download_filename(extension)
+        except ValueError as error:
+            ui.notify(str(error), type="warning")
+            return
         output = self._temporary_export_path("diptox-processed", extension)
         source = self.pipeline
 
@@ -1345,12 +1504,17 @@ class DiptoxWebApp:
             return output
         result = await self._run_read_job("Exporting results", operation)
         if result:
-            ui.download(result, filename=f"diptox-processed.{extension}")
+            ui.download(result, filename=filename)
             ui.notify("Your download is ready.", type="positive")
 
     async def _export_excluded(self) -> None:
         if self.pipeline.excluded_df.empty:
             ui.notify("No excluded records are available.", type="warning")
+            return
+        try:
+            filename = self._download_filename('csv', excluded=True)
+        except ValueError as error:
+            ui.notify(str(error), type="warning")
             return
         output = self._temporary_export_path("diptox-excluded", "csv")
         source = self.pipeline
@@ -1362,8 +1526,16 @@ class DiptoxWebApp:
             return output
         result = await self._run_read_job("Exporting excluded records", operation)
         if result:
-            ui.download(result, filename="diptox-excluded.csv")
+            ui.download(result, filename=filename)
             ui.notify("Excluded records are ready.", type="positive")
+
+    def _download_filename(self, extension: str, excluded: bool = False) -> str:
+        name = (self.export_filename.value or '').strip()
+        if Path(name).suffix.lower() in {'.csv', '.xlsx', '.txt', '.sdf', '.smi'}:
+            name = name[: -len(Path(name).suffix)]
+        if not name or name in {'.', '..'} or name.endswith('.') or re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
+            raise ValueError('Enter a file name without path separators or invalid filename characters.')
+        return f"{name}{'-excluded' if excluded else ''}.{extension}"
 
     async def _undo(self) -> None:
         if not self.pipeline._history:
@@ -1387,26 +1559,43 @@ class DiptoxWebApp:
             columns = list(map(str, frame.columns))
             self.header_dataset.set_text(f"{len(frame):,} × {len(columns):,}")
             self.sidebar_summary.set_text(f"{len(frame):,} rows\n{len(columns):,} columns")
-        condition_columns = [column for column in pipeline.source_columns if column in columns]
+        pairs = frame.attrs.get('_diptox_condition_columns', {}) if frame is not None else {}
+        merged_columns = frame.attrs.get('_diptox_merged_columns', []) if frame is not None else []
+        condition_columns = [column for column in dict.fromkeys([*pipeline.source_columns, *pairs, *pairs.values(), *merged_columns]) if column in columns]
         conditions = [value for value in (self.dedup_conditions.value or []) if value in condition_columns]
         self.dedup_conditions.set_options(condition_columns, value=conditions)
         previous_export = [value for value in (self.export_columns.value or []) if value in columns]
-        self.export_columns.set_options(columns, value=previous_export or self._recommended_columns())
+        selected = (self._recommended_columns() if self._export_selection_mode == 'recommended'
+                    else columns if self._export_selection_mode == 'all' else previous_export)
+        self._set_export_columns(selected, options=columns)
+        selected_column = self.value_filter_column.value if self.value_filter_column.value in columns else None
+        self.value_filter_column.set_options(columns, value=selected_column)
+        self._value_filter_column_changed()
+        selected_merge = self.value_merge_column.value if self.value_merge_column.value in columns else None
+        self.value_merge_column.set_options(columns, value=selected_merge)
+        self._value_merge_column_changed()
         excluded_count = len(pipeline.excluded_df)
         self.excluded_summary.set_text(
             f"{excluded_count:,} excluded records are ready for download." if excluded_count else "No excluded records are available."
         )
         self.export_excluded_button.set_enabled(excluded_count > 0 and not self.store.busy)
 
-        valid_units = bool(frame is not None and pipeline.target_col in columns and pipeline.unit_col in columns)
+        condition = self.unit_scope.value == 'Condition column'
+        for control in (self.condition_value, self.condition_unit):
+            control.set_options(columns, value=control.value if control.value in columns else None)
+            control.set_enabled(condition)
+        self.condition_log.set_enabled(condition)
+        valid_units = bool(frame is not None and (condition or (pipeline.target_col in columns and pipeline.unit_col in columns)))
         units = self._detected_units()
-        standard = _optional_text(self.unit_standard.value) or (units[0] if units else "")
+        standard = (_optional_text(self.unit_standard.value) or '') if condition else (_optional_text(self.unit_standard.value) or (units[0] if units else ""))
         self.unit_standard.set_autocomplete(units)
         self.unit_standard.set_value(standard)
         mw_value = self.mw_column.value if self.mw_column.value in columns else None
         self.mw_column.set_options(columns, value=mw_value)
         self.unit_run_button.set_enabled(valid_units and not self.store.busy)
-        if valid_units:
+        if condition:
+            self.unit_context.set_text('Condition column: select value/unit columns below; results are available for grouping and export.')
+        elif valid_units:
             self.unit_context.set_text(
                 f"Target: {pipeline.target_col}  ·  Unit column: {pipeline.unit_col}  ·  Detected: {', '.join(units) or 'none'}"
             )

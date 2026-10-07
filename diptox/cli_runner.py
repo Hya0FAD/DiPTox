@@ -100,7 +100,8 @@ def read_frame(spec):
     frame.columns = frame.columns.map(str)
     unit_column = spec.get("columns", {}).get("unit")
     if unit_column in frame:
-        frame[unit_column] = frame[unit_column].astype("string")
+        from .unit_labels import normalize_unit_label
+        frame[unit_column] = frame[unit_column].map(normalize_unit_label).astype("string")
     return frame
 
 
@@ -166,6 +167,7 @@ def _unit_rules(params):
 def _preflight(config, frame):
     """Validate dependencies using input metadata, without running chemistry."""
     available = set(frame.columns)
+    preview_frame = frame.copy()
     roles = dict(config["input"]["columns"])
     missing = sorted(set(roles.values()) - available)
     if missing:
@@ -182,6 +184,8 @@ def _preflight(config, frame):
         roles.update({role: renamed.get(column, column) for role, column in roles.items()})
         aliases.update({name: renamed.get(column, column) for name, column in aliases.items()})
         aliases.update(renamed)
+        preview_frame.rename(columns=renamed, inplace=True)
+        preview_frame.rename(columns=renamed, inplace=True)
         return renamed
 
     protect_columns(INITIAL_COLUMNS)
@@ -195,7 +199,39 @@ def _preflight(config, frame):
     target_scale = next(iter(scales)) if len(scales) == 1 else "mixed" if scales else "linear"
     for number, step in enumerate(config["steps"], 1):
         params = step["params"]
-        if step["op"] == "units":
+        if step["op"] == "transform-column":
+            from .column_transform import output_columns
+            value_col, unit_col = [aliases.get(params[key], params[key]) for key in ('value_col', 'unit_col')]
+            required = {value_col, unit_col}
+            if params['molecular_weight_col']:
+                required.add(aliases.get(params['molecular_weight_col'], params['molecular_weight_col']))
+            if not required <= available:
+                raise CliError('MISSING_COLUMNS', 'Column transformation inputs not found.', {'missing': sorted(required - available)})
+            if value_col == unit_col or (not params['standard_unit'] and params['log_transform'] == 'None'):
+                raise CliError('INVALID_TRANSFORMATION', 'Select distinct value/unit columns and a unit or log transformation.')
+            if params['molecular_weight_source'] == 'standardized' and not preprocessed:
+                raise CliError('PREPROCESS_REQUIRED', 'Standardized molecular weight requires preprocessing.')
+            processor = _unit_rules(params)
+            if unit_col in preview_frame:
+                from .unit_labels import normalize_unit_label
+                condition_units = preview_frame[unit_col].dropna().map(normalize_unit_label).astype(str)
+                if condition_units.str.match(r'^-?log10\(').any():
+                    raise CliError('LOG_TRANSFORMED_COLUMN', 'Select original linear condition values.')
+                target_unit = params['standard_unit']
+                for source_unit in condition_units.unique():
+                    if not target_unit or not source_unit or source_unit == target_unit:
+                        continue
+                    rule = processor.get_rule(source_unit, target_unit)
+                    if not rule:
+                        raise CliError('MISSING_CONVERSION_RULE', 'Missing condition conversion rule.', {'from': source_unit, 'to': target_unit})
+                    if 'mw' in rule and not (params['molecular_weight_col'] or params['molecular_weight_source']):
+                        raise CliError('MOLECULAR_WEIGHT_REQUIRED', 'Choose an explicit molecular-weight basis or column.')
+            outputs = output_columns(value_col, unit_col, params['log_transform'])
+            if { *outputs, outputs[0] + ' Status'} & available:
+                raise CliError('OUTPUT_COLUMN_CONFLICT', 'Transformation output columns already exist.')
+            available.update(outputs)
+            available.add(outputs[0] + ' Status')
+        elif step["op"] == "units":
             if target_scale != "linear":
                 raise CliError("LOG_TRANSFORMED_TARGET", "Unit conversion requires a linear target; move the units step before the log transformation.",
                                {"step": number, "scale": target_scale})
@@ -287,6 +323,40 @@ def _preflight(config, frame):
                 target_scale = output_scale
             available.update({"Deduplication Strategy", "Deduplication Record Count", "Deduplication Source Rows",
                               "Deduplication Distinct Value Count", "Deduplication Value Range"})
+        elif step["op"] == 'merge-values':
+            from .value_filter import merge_rules
+            column = aliases.get(params['column'], params['column'])
+            if column not in available:
+                raise CliError('MISSING_COLUMNS', 'Merge column not found.', {'column': column})
+            if not params['replacement'].strip():
+                raise CliError('INVALID_REPLACEMENT', 'Replacement label must not be blank.')
+            try:
+                mapping = merge_rules(params['values'], params['replacement'], params['groups'])
+            except ValueError as exc:
+                raise CliError('INVALID_MERGE_RULES', str(exc)) from exc
+            if mapping:
+                output = params['output_column'] if params['output_column'] is not None else column + ' (Merged)'
+                if not output.strip() or output in available:
+                    raise CliError('OUTPUT_COLUMN_CONFLICT', 'Choose a new, non-empty output column name.')
+                if column in preview_frame:
+                    from .value_filter import merge_values
+                    preview_frame, _, _ = merge_values(preview_frame, column, params['values'], params['replacement'], output, params['groups'])
+                available.add(output)
+        elif step["op"] == "filter-values":
+            column = aliases.get(params['column'], params['column'])
+            if column not in available:
+                raise CliError("MISSING_COLUMNS", "Filter column was not found.", {"missing": [column], "step": number})
+            if column in preview_frame:
+                from .value_filter import selection_mask
+                preview_frame = preview_frame.loc[selection_mask(preview_frame, column, params['values'], params['mode'])]
+                if roles.get('unit') in preview_frame and not standardized:
+                    units = set(preview_frame[roles['unit']].dropna().astype(str)) - {''}
+                    scales = {match.group(1) if (match := re.fullmatch(r'(-?log10)\(.*\)', unit)) else 'linear'
+                              for unit in units} if 'target' in roles else set()
+                    target_scale = next(iter(scales)) if len(scales) == 1 else 'mixed' if scales else 'linear'
+                    scales = {match.group(1) if (match := re.fullmatch(r'(-?log10)\(.*\)', unit)) else 'linear'
+                              for unit in units} if 'target' in roles else set()
+                    target_scale = next(iter(scales)) if len(scales) == 1 else 'mixed' if scales else 'linear'
         elif step["op"] == "preprocess":
             protect_columns(PREPROCESS_COLUMNS)
             available.update(PREPROCESS_COLUMNS)
@@ -468,6 +538,12 @@ def execute(config, command="run", dry_run=False, protected_paths=()):
             pipeline.preprocess(**params)
             rejected = pipeline.df.loc[~pipeline.df["Is Valid"].fillna(False)]
             audit = _audit_frame(rejected, number, operation, rejected["Processing Log"])
+        elif operation == "transform-column":
+            params['conversion_rules'] = {(rule['from'], rule['to']): rule['formula'] for rule in params['conversion_rules']}
+            pipeline.transform_column(**params)
+            removed = before.loc[~before.index.isin(pipeline.df.index)]
+            excluded = pipeline.excluded_df.loc[pipeline.excluded_df.index.isin(removed.index)]
+            audit = _audit_frame(excluded, number, operation, excluded['Exclusion Reason'] if not excluded.empty else '')
         elif operation == "units":
             _replace_nonfinite_targets(pipeline)
             params["conversion_rules"] = {(rule["from"], rule["to"]): rule["formula"] for rule in params["conversion_rules"]}
@@ -506,6 +582,16 @@ def execute(config, command="run", dry_run=False, protected_paths=()):
                         for source in str(provenance[member]).split(';')
                     )) for index in pipeline.df.index
                 ]
+        elif operation == 'merge-values':
+            pipeline.merge_column_values(**params)
+            audit = _audit_frame(before.iloc[:0], number, operation, '')
+        elif operation == "filter-values":
+            params['column'] = pipeline._input_column_aliases.get(params['column'], params['column'])
+            pipeline.filter_by_values(**params)
+            removed = before.loc[~before.index.isin(pipeline.df.index)]
+            excluded = pipeline.excluded_df.loc[pipeline.excluded_df.index.isin(removed.index)]
+            reasons = excluded['Exclusion Reason'] if not excluded.empty else ''
+            audit = _audit_frame(excluded, number, operation, reasons, severity='filtered')
         elif operation in {"search", "filter-atoms", "inchi"}:
             from .cli_operations import execute_operation
             audit, operation_stats = execute_operation(pipeline, operation, params)

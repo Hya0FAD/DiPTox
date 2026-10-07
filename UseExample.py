@@ -246,8 +246,79 @@ def advanced_use_case(input_path="path/to/your/FileName.xlsx",
 
 
 # ==============================================================================
-# Main Execution Block (REQUIRED for Windows Multiprocessing)
+# Use Case 6: Filter Rows by Column Values
 # ==============================================================================
+def use_case_6():
+    """Discover column values and filter rows; omitted selections keep all rows."""
+    pipeline = DiptoxPipeline(interactive=False)
+    pipeline.load_data(pd.DataFrame({
+        'SMILES': ['CCO', 'CCC', 'CCCC', 'CC'],
+        'Species': ['rat', 'mouse', 'rat', None],
+        'Study type': ['in vivo', 'in vitro', 'in vitro', 'in vivo'],
+    }), smiles_col='SMILES')
+    print(pipeline.get_column_values('Species'))  # [{'value': 'rat', 'count': 2}, ...]
+    pipeline.filter_by_values('Species', ['rat'], mode='keep')
+    pipeline.filter_by_values('Study type', ['in vitro'], mode='remove')
+    # None inside a selection matches missing cells: values=[None].
+    # values=[] (or omitted values) does not remove any rows, in either mode.
+    print(pipeline.df)
+    print(pipeline.get_excluded_records())
+    # pipeline.save_excluded_results('Column_filter_excluded.csv')
+    # pipeline.undo()  # Undo the latest column filter, including its exclusions.
+    return pipeline
+
+
+def use_case_7():
+    """Convert exposure duration before using it as a deduplication condition."""
+    pipeline = DiptoxPipeline(interactive=False)
+    pipeline.load_data(pd.DataFrame({
+        'SMILES': ['CCO', 'CCO'], 'Value': [1., 3.], 'Unit': ['mg/L', 'mg/L'],
+        'Duration': [1., 24.], 'Duration unit': ['d', 'h'],
+    }), smiles_col='SMILES', target_col='Value', unit_col='Unit')
+    value_col, unit_col = pipeline.transform_column(
+        value_col='Duration', unit_col='Duration unit', standard_unit='h',
+        log_transform='None',  # 'log10' or '-log10'; conversion runs first.
+    )
+    pipeline.config_deduplicator(condition_cols=[value_col, unit_col],
+                                 data_type='continuous', aggregation='mean')
+    pipeline.dataset_deduplicate()
+    print(pipeline.df)
+    return pipeline
+
+
+def use_case_8():
+    """Combine categories into one condition, retaining the original column."""
+    pipeline = DiptoxPipeline(interactive=False)
+    pipeline.load_data(pd.DataFrame({
+        'SMILES': ['CCO', 'CCO', 'CCO'],
+        'Species': ['mouse', 'rabbit', 'human'], 'Value': [1., 3., 5.],
+    }), smiles_col='SMILES', target_col='Value')
+    print(pipeline.get_column_values('Species'))
+    group = pipeline.merge_column_values(
+        'Species', ['mouse', 'rabbit'], replacement='other', output_column='Species group')
+    # The new column is ['other', 'other', 'human']; source values and rows remain intact.
+    pipeline.config_deduplicator(condition_cols=[group], data_type='continuous', aggregation='mean')
+    pipeline.dataset_deduplicate()
+    print(pipeline.df)
+    return pipeline
+
+
+def use_case_9():
+    """Apply several category mappings simultaneously into one output column."""
+    import json
+    from pathlib import Path
+    rules = json.loads((Path(__file__).parent / 'examples' / 'life_stage_merge_groups.json').read_text(encoding='utf-8'))
+    pipeline = DiptoxPipeline(interactive=False)
+    pipeline.load_data(pd.DataFrame({'SMILES': ['CCO'] * 6,
+                                    'Stage': ['Egg', 'Fry', 'Juvenile', 'Mature', 'Sperm', 'Unknown']}),
+                       smiles_col='SMILES')
+    output = pipeline.merge_column_values('Stage', groups=rules, output_column='Stage group')
+    print(pipeline.df[['Stage', output]])
+    # Select output as a condition column when configuring deduplication.
+    return pipeline
+
+
+# Main Execution Block (required for Windows multiprocessing)
 if __name__ == '__main__':
     multiprocessing.freeze_support()
     # Uncomment the function you want to run:
@@ -257,4 +328,8 @@ if __name__ == '__main__':
     # use_case_3()
     # use_case_4()
     # use_case_5()
+    # use_case_6()
+    # use_case_7()
+    # use_case_8()
+    # use_case_9()
     # advanced_use_case()

@@ -6,6 +6,22 @@
 </p>
 **DiPTox** is a Python toolkit designed for the robust preprocessing, standardization, and multi-source data integration of molecular datasets, with a focus on computational toxicology workflows.
 
+## v1.1.3 Updates
+
+- **Precision fix**: Unit conversion no longer rounds intermediate results to source significant figures before log transforms or aggregation. Recalculate existing affected labels from original concentrations and molecular weights.
+- **Batch value merging**: GUI, API and CLI accept multiple merge rules as a JSON array and produce one grouping column. Rules match original values simultaneously; unlisted values and source columns are preserved, conflicting replacements are rejected, and the operation can be undone. See the [guide](docs/CONDITION_COLUMNS.md) and [life-stage example](examples/life_stage_merge_groups.json).
+
+## v1.1.2 Updates
+
+- **Condition columns**: Convert a selected value/unit pair and optionally apply log10/-log10 before grouping. See the [API, GUI and CLI guide](docs/CONDITION_COLUMNS.md).
+- **Column adjustments**: A separate page above Deduplication groups value filtering and merging. Merge selected categories into a label such as `other` in a new grouping column; original values are preserved. API and CLI support the same operation.
+
+## v1.1.1 Updates
+
+- **Column-value filtering**: Discover values and counts, then keep or remove selected values through the API, GUI or CLI. Empty selections retain all rows; exclusions are audited and can be undone.
+- **Export fixes**: Recommended GUI columns track final targets, units and deduplication conditions. Logarithmic unit labels display as text in Excel.
+- **Download names**: Set a custom file name in the GUI; extensions follow the selected format.
+
 ## v1.1.0 Updates
 
 - **CLI and JSON pipelines**: Added a command-line entry point for agents and scripts, with discovery, data inspection, configuration preflight, preprocessing, unit conversion, deduplication, substructure search, atom-count filtering, and InChI calculation.
@@ -140,13 +156,13 @@ def main():
     DP.preprocess(
         remove_salts=True,              # Remove salt fragments. Default: True.
         remove_solvents=True,           # Remove solvent fragments. Default: True.
-        mixture_mode="reject",          # keep / reject / largest. Default: reject.
+        mixture_mode="reject",         # keep / reject / largest. Default: reject.
         hac_threshold=3,                # Largest mode requires a unique largest fragment with HAC > 3.
         remove_inorganic=False,         # Remove common inorganic molecules. Default: True.
         neutralize=True,                # Neutralize charges on the molecule. Default: True.
         reject_non_neutral=False,       # Only retain the molecules whose formal charge is zero. Default: False.
-        element_policy="allow_all",     # allow_all / reject_metals / allowed_atoms. Default: allow_all.
-                                        # allowed_atoms rejects the whole molecule if any element is unlisted, regardless of atom degree.
+        element_policy="allow_all",    # allow_all / reject_metals / allowed_atoms. Default: allow_all.
+                                      # allowed_atoms rejects the whole molecule if any element is unlisted, regardless of atom degree.
         remove_stereo=False,            # Remove stereochemistry information. Default: False.
         remove_isotopes=True,           # Remove isotopic information. Default: True.
         remove_hs=True,                 # Remove explicit hydrogen atoms. Default: True.

@@ -1,6 +1,42 @@
 # DiPTox CLI Guide
 
+For multiple merge groups in one output column, pass `--groups '[{"values":["Egg","Embryo"],"replacement":"Embryonic"},{"values":["Fry","Larva"],"replacement":"Larval"}]'` instead of `--values`. JSON pipelines accept the same array in `params.groups`. Rules match original values simultaneously; conflicting replacements are rejected. Unlisted values are retained.
+
+`merge-values` merges selected categories into a text label in a new column without removing rows or changing source columns. Use `--column Species --values '["mouse","rabbit"]' --replacement other --output-column "Species group"` with `--input` and `--output`. The new column can be used by later deduplication steps. Empty selections do nothing; undo is available through the API/GUI. See [column adjustments](CONDITION_COLUMNS.md) for JSON examples.
+
+Use `transform-column` for independent condition value/unit conversions and log10/-log10. See [condition transformations](CONDITION_COLUMNS.md) for CLI and JSON examples.
+
 [Back to README](../README.md) | [Chinese guide](CLI_ZH.md)
+
+## Filter rows by column values
+
+List every distinct value and its row count:
+
+```bash
+python -m diptox column-values --input data.csv --column Species
+python -m diptox filter-values --input data.csv --column Dose --mode remove --values '[0,null]' --output kept.csv --excluded excluded.csv
+```
+
+Choose one mode: `keep` retains selected values; `remove` excludes them. Omitted values or `[]` retain all rows in either mode. `--values` accepts a JSON array; `null` matches missing cells, `""` is a separate empty-string value, and numeric `1` is distinct from text `"1"`. No SMILES mapping is required for this operation. Removed rows enter the exclusion audit with reasons and source-row identifiers; intentional filtering does not trigger `--strict` failures.
+
+For string selections or multiple columns, add ordered steps to a JSON pipeline:
+
+```json
+[
+  {"op": "filter-values", "params": {"column": "Species", "mode": "keep", "values": ["rat", "mouse"]}},
+  {"op": "filter-values", "params": {"column": "Study type", "mode": "remove", "values": ["in vitro"]}}
+]
+```
+
+The API provides `pipeline.get_column_values(column)` and `pipeline.filter_by_values(column, values, mode='keep')`. Apply filters successively for multiple columns; `pipeline.undo()` restores the last filter and its exclusions. In the GUI, use **Search & filter → Filter by column values**, select a column, mode and values, then **Apply column filter**. Empty selection leaves the dataset unchanged.
+
+## Excel unit labels and GUI export columns
+
+CSV/TXT exports use a mathematical minus sign in negative-log units (`−log10(mol/L)`) and UTF-8 BOM so Excel displays text instead of evaluating a formula. XLSX strings are explicitly written as text cells. DiPTox normalizes mapped unit columns back to internal `-log10(...)` notation on import, preserving scale detection and preventing repeated logarithmic conversion.
+
+The GUI's **Recommended** selection updates after processing and includes the final target, unit and actual deduplication condition columns. Manual column selections are preserved; click **Recommended** to resume automatic updates.
+
+The export page's **File name** field sets the download name. The chosen format supplies the extension, replacing an existing supported extension. Exclusions use the same base name with `-excluded.csv`. Enter a file name only; the browser's download settings determine the destination folder.
 
 Unless stated otherwise, commands assume the repository root is the working directory; example file paths are relative to that root.
 

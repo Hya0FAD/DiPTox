@@ -11,7 +11,7 @@ __all__ = ["DiptoxPipeline",
            "SubstructureSearcher",
            "UnitProcessor"
            ]
-__version__ = "1.1.0"
+__version__ = "1.1.3"
 
 _PUBLIC_MODULES = {
     "DiptoxPipeline": "core",

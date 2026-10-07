@@ -76,6 +76,10 @@ def build_parser():
     _output_options(inspect)
     _input_options(inspect)
     inspect.add_argument("--limit", type=int, default=5, help="Preview rows, 0 to 1000 (default: 5).")
+    values = commands.add_parser("column-values", help="List every distinct value and row count in a column.")
+    _output_options(values)
+    _input_options(values)
+    values.add_argument("--column", required=True)
     run = commands.add_parser("run", help="Execute ordered pipeline steps from JSON.")
     _output_options(run)
     run.add_argument("--config", required=True, help="JSON file, or - to read configuration from stdin.")
@@ -94,6 +98,10 @@ def build_parser():
         for name in ("dry-run", "overwrite", "strict"):
             command.add_argument("--" + name, action="store_true", default=argparse.SUPPRESS)
         for name, spec in specs.items():
+            if operation == 'transform-column' and name == 'unit_col':
+                command.add_argument('--column-unit', default=argparse.SUPPRESS,
+                                     help='Unit column paired with --value-col (independent of the primary target).')
+                continue
             options = {"default": argparse.SUPPRESS}
             kind = spec["type"]
             if isinstance(kind, list):
@@ -104,13 +112,17 @@ def build_parser():
                 options["type"] = int
             elif kind == "number":
                 options["type"] = float
-            elif kind == "array" and name != "conversion_rules":
+            elif kind == "array" and name not in {"conversion_rules", "values", "groups"}:
                 options["nargs"] = "+"
                 if "enum" in spec.get("items", {}):
                     options["choices"] = spec["items"]["enum"]
             if "enum" in spec:
                 options["choices"] = [value for value in spec["enum"] if value is not None]
-            if name == "conversion_rules":
+            if name == 'groups':
+                options['help'] = 'JSON array of {values: [...], replacement: "label"} rules; mutually exclusive with --values.'
+            elif name == "values":
+                options["help"] = 'JSON array (e.g. [1,2,null]); omitted or [] keeps all rows.'
+            elif name == "conversion_rules":
                 options["help"] = "JSON file containing [{from, to, formula}, ...]."
             elif "default" in spec:
                 options["help"] = spec.get("description", f"Default: {spec['default']}.")
@@ -174,6 +186,13 @@ def _execute(args):
         from .cli_runner import envelope
         effective = apply_rules(ChemistryProcessor(), rule_changes or {})
         return envelope("rules", rules=effective, summary={"counts": {key: len(value) for key, value in effective.items()}})
+    if args.command == "column-values":
+        from .cli_runner import envelope, json_safe, read_frame
+        from .value_filter import column_values
+        frame = read_frame(_input_spec(args))
+        values = column_values(frame, args.column)
+        return envelope("column-values", summary={"column": args.column, "rows": len(frame),
+                                                  "distinct_values": len(values), "values": json_safe(values)})
     if args.command == "inspect":
         if not 0 <= args.limit <= 1000:
             raise CliError("INVALID_ARGUMENTS", "--limit must be between 0 and 1000.")
@@ -195,6 +214,14 @@ def _execute(args):
                     raw[flag] = True
     else:
         params = {name: getattr(args, name) for name in PARAM_SPECS[args.command] if hasattr(args, name)}
+        if args.command == 'transform-column':
+            params.pop('unit_col', None)
+            if hasattr(args, 'column_unit'):
+                params['unit_col'] = args.column_unit
+        if "values" in params:
+            params["values"] = _json_load(params["values"])
+        if 'groups' in params:
+            params['groups'] = _json_load(params['groups'])
         if "conversion_rules" in params:
             rules_path = Path(params["conversion_rules"]).resolve()
             params["conversion_rules"] = _json_load(rules_path.read_text(encoding="utf-8-sig"))

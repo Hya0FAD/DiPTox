@@ -1,6 +1,47 @@
 # DiPTox CLI 操作指南
 
+批量合并使用 `--groups '[{"values":["Egg","Embryo"],"replacement":"Embryonic"},{"values":["Fry","Larva"],"replacement":"Larval"}]'`，不再传 `--values`。JSON 流水线使用 `params.groups`。一次生成一列，同时匹配原值；冲突规则报错，未列出的值保留原样。完整示例见 `examples/life_stage_merge_groups.json`。
+
+新增 `merge-values`：选择列和多个值，统一替换为文本标签，生成新列并保留全部行和原列。例如 `--column Species --values '["mouse","rabbit"]' --replacement other --output-column "Species group"`，同时提供 `--input` 和 `--output`。新列可用于后续去重条件，空选择不做修改。JSON 示例见[列调整说明](CONDITION_COLUMNS.md)。
+
+新增 `transform-column`，支持独立指定条件数值/单位列，换算后可选 log10 / -log10。命令及 JSON 示例见[条件列转换](CONDITION_COLUMNS.md)。
+
 [返回项目说明](../README_ZH.md) · [English](CLI.md)
+
+## 按列取值筛选
+
+查看某列的全部不同取值和对应行数：
+
+```bash
+python -m diptox column-values --input data.csv --column Species
+```
+
+筛选模式 `keep`（仅保留选中值）与 `remove`（去除选中值）互斥。未提供 `--values` 或传入 `[]` 时全保留；JSON `null` 表示缺失值，空字符串 `""` 是独立取值，数值 `1` 与文本 `"1"` 区分。`--values` 接受 JSON 数组，例如数值列：
+
+```bash
+python -m diptox filter-values --input data.csv --column Dose --mode remove --values '[0,null]' --output kept.csv --excluded excluded.csv
+```
+
+也可使用 JSON 流水线配置字符串选项；多个列筛选步骤按顺序执行，结果为各步保留行的交集。以下内容放入配置的 `steps` 数组：
+
+```json
+[
+  {"op": "filter-values", "params": {"column": "Species", "mode": "keep", "values": ["rat", "mouse"]}},
+  {"op": "filter-values", "params": {"column": "Study type", "mode": "remove", "values": ["in vitro"]}}
+]
+```
+
+单纯按列筛选不要求 SMILES 列映射。被筛除的整行写入排除记录，包含原因、步骤和源行标识；这是主动筛选，`--strict` 不将其视为数据错误。
+
+Python API 对应 `pipeline.get_column_values(column)` 和 `pipeline.filter_by_values(column, values, mode='keep')`；`pipeline.undo()` 可撤销筛选。GUI 在 **Search & filter → Filter by column values** 中选列、选模式和取值，然后点击 **Apply column filter**；可逐列应用，未选择值则保持数据不变。
+
+## Excel 中的单位显示
+
+CSV/TXT 的负对数单位使用数学减号，例如 `−log10(mol/L)`，并使用 UTF-8 BOM，避免 Excel 将其解释为公式。XLSX 字符串明确保存为文本单元格。重新导入 DiPTox 时，映射的单位列会恢复内部 `-log10(...)` 形式，仍能识别已转换尺度，避免重复取对数。
+
+GUI 的 **Recommended** 下载列会随处理更新，包含当前最终目标值、单位和实际去重条件列。手动修改列选择后保留自定义选择；再次点击 **Recommended** 恢复自动更新。
+
+导出页的 **File name** 可设置下载文件名，扩展名按所选格式自动补全；已输入的常用扩展名会被替换。排除记录使用同一名称加 `-excluded.csv`，例如“筛选结果.xlsx”和“筛选结果-excluded.csv”。命名框只填写文件名，保存目录由浏览器下载设置决定。
 
 除非另有说明，文中的命令均在仓库根目录执行；`examples/cli/...` 指仓库中的示例路径。
 

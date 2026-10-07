@@ -100,37 +100,6 @@ class UnitProcessor:
 
         return True
 
-    @staticmethod
-    def _apply_precision(original_series: pd.Series, converted_series: pd.Series) -> pd.Series:
-        def get_sig_figs(s):
-            if pd.isna(s):
-                return np.nan
-            s = str(s).strip().lower().lstrip('-')
-            if 'e' in s:
-                s = s.split('e')[0]
-            s_clean = s.replace('.', '').lstrip('0')
-            if not s_clean:
-                return 1
-            return len(s_clean)
-
-        def round_to_sig_figs(val, sf):
-            if pd.isna(val) or pd.isna(sf):
-                return val
-            if val == 0:
-                return 0.0
-            sf = int(sf)
-            try:
-                order = int(np.floor(np.log10(abs(val))))
-                decimals = sf - 1 - order
-                if decimals <= 0:
-                    return np.round(val, 0)
-                return np.round(val, decimals)
-            except Exception:
-                return val
-        sig_figs = original_series.apply(get_sig_figs)
-        rounded_values = [round_to_sig_figs(v, sf) for v, sf in zip(converted_series, sig_figs)]
-        return pd.Series(rounded_values, index=converted_series.index)
-
     def convert(self, values: pd.Series, formula: str, mw: Optional[pd.Series] = None) -> pd.Series:
         """
         Applies the conversion formula to a pandas Series.
@@ -289,7 +258,8 @@ class UnitProcessor:
                     df.loc[mask, mw_source_col] = "not required"
 
                 converted_values = self.convert(values_to_convert, formula, mw=mw_values)
-                converted_values = self._apply_precision(df.loc[mask, target_col], converted_values)
+                # Preserve full floating-point precision for downstream logs and
+                # aggregation. Source significant figures must not round labels.
                 successful = converted_values.notna() & np.isfinite(converted_values)
                 successful_indices = converted_values.index[successful]
                 df.loc[successful_indices, new_target_col] = converted_values[successful]
